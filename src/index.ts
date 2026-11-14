@@ -8,6 +8,7 @@ export {
   DEFAULT_MAX_FAMILY_LIFETIME_SECONDS,
   DEFAULT_TTL,
   FrontdeskConfigError,
+  MAX_FAMILY_LIFETIME_SECONDS,
   type AuditEvent,
   type AuditSink,
   type FrontdeskConfig,

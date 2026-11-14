@@ -13,9 +13,14 @@
  * refuse.
  *
  * Never truncates: the caller gets the whole body or a refusal.
+ *
+ * With a `signal`, an abort (a deadline passing) cancels the stream with the
+ * signal's reason and answers `aborted`: a body that stalls is let go of, not
+ * left holding a read that will never finish. An already aborted signal reads
+ * nothing.
  */
 
-export type CappedRead = { ok: true; bytes: Uint8Array } | { ok: false; reason: "too_large" };
+export type CappedRead = { ok: true; bytes: Uint8Array } | { ok: false; reason: "too_large" | "aborted" };
 
 /** A cancel that fails has nothing left to tell us: the read is already refused. */
 const ignore = (): undefined => undefined;
@@ -24,6 +29,7 @@ export async function readCapped(
   body: ReadableStream<Uint8Array> | null,
   maxBytes: number,
   declaredLength: string | null = null,
+  signal?: AbortSignal,
 ): Promise<CappedRead> {
   const declared = declaredLength === null ? Number.NaN : Number(declaredLength);
   if (Number.isFinite(declared) && declared > maxBytes) {
@@ -31,18 +37,30 @@ export async function readCapped(
     return { ok: false, reason: "too_large" };
   }
   if (body === null) return { ok: true, bytes: new Uint8Array(0) };
-  const reader = body.getReader();
-  const buffer = new Uint8Array(maxBytes);
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (total + value.byteLength > maxBytes) {
-      await reader.cancel().catch(ignore);
-      return { ok: false, reason: "too_large" };
-    }
-    buffer.set(value, total);
-    total += value.byteLength;
+  if (signal?.aborted) {
+    await body.cancel(signal.reason).catch(ignore);
+    return { ok: false, reason: "aborted" };
   }
-  return { ok: true, bytes: buffer.subarray(0, total) };
+  const reader = body.getReader();
+  // Cancelling the reader settles a pending read (as done), so the loop below sees the abort.
+  const onAbort = () => void reader.cancel(signal!.reason).catch(ignore);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const buffer = new Uint8Array(maxBytes);
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (signal?.aborted) return { ok: false, reason: "aborted" };
+      if (done) break;
+      if (total + value.byteLength > maxBytes) {
+        await reader.cancel().catch(ignore);
+        return { ok: false, reason: "too_large" };
+      }
+      buffer.set(value, total);
+      total += value.byteLength;
+    }
+    return { ok: true, bytes: buffer.subarray(0, total) };
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
 }

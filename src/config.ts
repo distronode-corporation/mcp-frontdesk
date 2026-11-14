@@ -125,7 +125,8 @@ export interface FrontdeskConfig {
    * The absolute lifetime of a grant family, in seconds from its first sign-in
    * (the code exchange). A refresh at or after it is refused and revokes the
    * family, however recently the family was refreshed; the person signs in
-   * again. Default 30 days (`DEFAULT_MAX_FAMILY_LIFETIME_SECONDS`).
+   * again. Default 30 days (`DEFAULT_MAX_FAMILY_LIFETIME_SECONDS`), at most
+   * 365 days (`MAX_FAMILY_LIFETIME_SECONDS`).
    */
   maxFamilyLifetimeSeconds?: number;
   /**
@@ -188,6 +189,13 @@ export const DEFAULT_TTL = { authorizationCode: 60, accessToken: 600, refreshTok
 /** The default absolute lifetime of a grant family: 30 days, in seconds. */
 export const DEFAULT_MAX_FAMILY_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 
+/**
+ * The most `maxFamilyLifetimeSeconds` may be: 365 days, in seconds. A family
+ * that may live longer than a year is not bounded in any useful sense, and the
+ * cap keeps every expiry computed from it far inside what a Date can hold.
+ */
+export const MAX_FAMILY_LIFETIME_SECONDS = 365 * 24 * 60 * 60;
+
 /** RFC 6749 section 3.3 scope-token. */
 const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
 
@@ -241,9 +249,18 @@ function stringList(name: string, raw: unknown, allowEmpty: boolean): string[] {
   return [...(raw as string[])];
 }
 
-/** Is `raw` a canonical absolute path: no host, query, fragment or dot segment, nothing the URL parser would rewrite? */
+/**
+ * Is `raw` a canonical absolute path: no host, query, fragment or dot segment,
+ * nothing the URL parser would rewrite? A path the parser refuses outright (it
+ * reads `//[` as a broken host) is not one either.
+ */
 function isCanonicalPath(raw: string): boolean {
-  return raw.startsWith("/") && new URL(raw, "https://path.invalid").pathname === raw;
+  if (!raw.startsWith("/")) return false;
+  try {
+    return new URL(raw, "https://path.invalid").pathname === raw;
+  } catch {
+    return false;
+  }
 }
 
 function endpoint(name: string, raw: unknown, issuer: string): string {
@@ -260,9 +277,10 @@ function endpoint(name: string, raw: unknown, issuer: string): string {
   return url.href;
 }
 
-function seconds(name: string, raw: number | undefined, fallback: number): number {
+function seconds(name: string, raw: number | undefined, fallback: number, max = Number.POSITIVE_INFINITY): number {
   const value = raw ?? fallback;
   if (!Number.isInteger(value) || value <= 0) fail(`${name} must be a positive integer number of seconds`);
+  if (value > max) fail(`${name} must be at most ${max} seconds (${max / 86_400} days)`);
   return value;
 }
 
@@ -336,7 +354,12 @@ export function resolveConfig(config: FrontdeskConfig): ResolvedConfig {
     accessTtlSeconds: ttl("accessToken", config.ttl?.accessToken, DEFAULT_TTL.accessToken),
     refreshTtlSeconds: ttl("refreshToken", config.ttl?.refreshToken, DEFAULT_TTL.refreshToken),
     refreshTokenReuse: config.refreshTokenReuse ?? "revoke-family",
-    maxFamilyLifetimeSeconds: seconds("maxFamilyLifetimeSeconds", config.maxFamilyLifetimeSeconds, DEFAULT_MAX_FAMILY_LIFETIME_SECONDS),
+    maxFamilyLifetimeSeconds: seconds(
+      "maxFamilyLifetimeSeconds",
+      config.maxFamilyLifetimeSeconds,
+      DEFAULT_MAX_FAMILY_LIFETIME_SECONDS,
+      MAX_FAMILY_LIFETIME_SECONDS,
+    ),
     now: config.now ?? Date.now,
   };
 }

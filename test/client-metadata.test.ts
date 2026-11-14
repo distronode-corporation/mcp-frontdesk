@@ -158,14 +158,53 @@ describe("ClientMetadataFetcher with the unsafe fetch option", () => {
     t.mock.timers.tick(1);
     assert.deepEqual(await pending, { ok: false, reason: "unreachable" });
     assert.equal(signal.aborted, true);
+    // A timeout, not a cancel: a host's fetch can tell the two apart.
+    assert.ok(signal.reason instanceof DOMException && signal.reason.name === "TimeoutError", String(signal.reason));
   });
 
-  it("holds the body read to the same deadline", { timeout: 5_000 }, async (t) => {
+  it("holds the body read to the same deadline, and cancels the read when it passes", { timeout: 5_000 }, async (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
-    const stalled = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) });
-    const pending = fetcher(async () => new Response(stalled, { headers: { "Content-Type": "application/json" } })).fetch(CLIENT_ID);
+    let cancelled: unknown = "not cancelled";
+    const stalled = new ReadableStream<Uint8Array>({
+      pull: () => new Promise(() => undefined),
+      cancel(reason) {
+        cancelled = reason;
+      },
+    });
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => (started = resolve));
+    const pending = fetcher(async () => {
+      queueMicrotask(started);
+      return new Response(stalled, { headers: { "Content-Type": "application/json" } });
+    }).fetch(CLIENT_ID);
+    await reading;
     t.mock.timers.tick(5_000);
     assert.deepEqual(await pending, { ok: false, reason: "unreachable" });
+    // The stalled body is let go of, not left waiting on a read that will never finish.
+    assert.ok(cancelled instanceof DOMException && cancelled.name === "TimeoutError", String(cancelled));
+  });
+
+  it("a deadline that passed before the body is read cancels it unread", { timeout: 5_000 }, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let pulled = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull: () => void (pulled += 1),
+        cancel: () => void (cancelled = true),
+      },
+      { highWaterMark: 0 },
+    );
+    let answer!: (res: Response) => void;
+    const pending = fetcher(() => new Promise<Response>((resolve) => (answer = resolve))).fetch(CLIENT_ID);
+    await Promise.resolve();
+    t.mock.timers.tick(5_000);
+    // The fetch answers only after the deadline; its body is never read.
+    answer(new Response(body, { headers: { "Content-Type": "application/json" } }));
+    assert.deepEqual(await pending, { ok: false, reason: "unreachable" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pulled, 0);
+    assert.equal(cancelled, true);
   });
 
   it("caps the body at 5 KB while streaming, and accepts exactly 5 KB", async () => {

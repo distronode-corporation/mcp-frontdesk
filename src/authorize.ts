@@ -211,7 +211,15 @@ export function createAuthorize(ctx: Context) {
 
   async function approve(input: ApproveParams): Promise<ApproveResult> {
     if (typeof input.subject !== "string" || input.subject === "") throw new TypeError("approve needs a non-empty subject");
-    const checked = await check(input.params);
+    // A hook that throws (the clock, a key provider, a store) fails closed, as at the token
+    // endpoint: reported, and no code. Misuse of approve itself still throws TypeError.
+    let checked: AuthorizeCheck;
+    try {
+      checked = await check(input.params);
+    } catch (err) {
+      ctx.report("approve", err);
+      return { ok: false, kind: "unavailable" };
+    }
     if (!checked.ok) return checked;
     const request = checked.request;
     const scopes = input.scopes === undefined ? request.scopes : [...input.scopes];
@@ -230,7 +238,13 @@ export function createAuthorize(ctx: Context) {
     }
 
     const bare = randomToken(32);
-    const approvedAt = config.now();
+    let approvedAt: number;
+    try {
+      approvedAt = config.now();
+    } catch (err) {
+      ctx.report("now", err);
+      return { ok: false, kind: "unavailable" };
+    }
     let handed: string;
     try {
       handed = ctx.hooks.tokenWrapper ? ctx.hooks.tokenWrapper.wrap("code", bare) : bare;

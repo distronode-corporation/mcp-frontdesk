@@ -129,6 +129,34 @@ describe("readCapped (safety property 2: streaming caps)", () => {
     assert.deepEqual(await readCapped(stream, 6), { ok: true, bytes: new Uint8Array([1, 1, 2, 2, 3, 3]) });
   });
 
+  it("stops at an abort: an aborted signal reads nothing, and an abort mid-read cancels the stream with its reason", async () => {
+    let pulled = 0;
+    let reason: unknown;
+    const tracked = () =>
+      new ReadableStream<Uint8Array>(
+        {
+          pull: () => void (pulled += 1),
+          cancel: (why) => void (reason = why),
+        },
+        { highWaterMark: 0 },
+      );
+    const gone = AbortSignal.abort(new DOMException("late", "TimeoutError"));
+    assert.deepEqual(await readCapped(tracked(), 10, null, gone), { ok: false, reason: "aborted" });
+    assert.equal(pulled, 0);
+    assert.equal((reason as DOMException).name, "TimeoutError");
+
+    const controller = new AbortController();
+    const reading = readCapped(new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined), cancel: (why) => void (reason = why) }), 10, null, controller.signal);
+    controller.abort(new DOMException("deadline", "TimeoutError"));
+    assert.deepEqual(await reading, { ok: false, reason: "aborted" });
+    assert.equal((reason as DOMException).message, "deadline");
+
+    // A signal that never fires changes nothing.
+    const quiet = new AbortController();
+    const one = new Response(new Uint8Array([1, 2, 3]));
+    assert.deepEqual(await readCapped(one.body, 10, null, quiet.signal), { ok: true, bytes: new Uint8Array([1, 2, 3]) });
+  });
+
   it("ignores a cancel that rejects", async () => {
     const failing = () =>
       new ReadableStream<Uint8Array>({

@@ -1,7 +1,15 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
-import { claudeClients, DEFAULT_MAX_FAMILY_LIFETIME_SECONDS, DEFAULT_TTL, FrontdeskConfigError, resolveConfig, type FrontdeskConfig } from "../src/config.ts";
+import {
+  claudeClients,
+  DEFAULT_MAX_FAMILY_LIFETIME_SECONDS,
+  DEFAULT_TTL,
+  FrontdeskConfigError,
+  MAX_FAMILY_LIFETIME_SECONDS,
+  resolveConfig,
+  type FrontdeskConfig,
+} from "../src/config.ts";
 import { createFrontdesk } from "../src/frontdesk.ts";
 import { authorizationServerMetadataUrl, protectedResourceMetadataUrl } from "../src/discovery.ts";
 import { MemoryCodeStore, MemoryGrantStore } from "../src/memory-stores.ts";
@@ -60,6 +68,7 @@ describe("resolveConfig", () => {
     assert.deepEqual([config.codeTtlSeconds, config.accessTtlSeconds, config.refreshTtlSeconds], [30, 300, 3600]);
     assert.equal(config.refreshTokenReuse, "refuse");
     assert.equal(config.maxFamilyLifetimeSeconds, 7 * 86_400);
+    assert.equal(resolveConfig({ ...base, maxFamilyLifetimeSeconds: MAX_FAMILY_LIFETIME_SECONDS }).maxFamilyLifetimeSeconds, 365 * 86_400);
   });
 
   const bad: [string, Partial<Record<keyof FrontdeskConfig, unknown>>, RegExp][] = [
@@ -97,6 +106,9 @@ describe("resolveConfig", () => {
     ["a fractional lifetime", { ttl: { refreshToken: 1.5 } }, /ttl.refreshToken/],
     ["a zero family lifetime", { maxFamilyLifetimeSeconds: 0 }, /maxFamilyLifetimeSeconds must be a positive integer/],
     ["a fractional family lifetime", { maxFamilyLifetimeSeconds: 1.5 }, /maxFamilyLifetimeSeconds must be a positive integer/],
+    ["a family lifetime over a year", { maxFamilyLifetimeSeconds: 365 * 86_400 + 1 }, /maxFamilyLifetimeSeconds must be at most 31536000 seconds \(365 days\)/],
+    ["a family lifetime past any date", { maxFamilyLifetimeSeconds: 1e306 }, /maxFamilyLifetimeSeconds must be at most 31536000/],
+    ["a resource path the URL parser cannot read", { resourcePaths: ["//["] }, /absolute paths/],
     ["a code store without the tombstone methods", { codeStore: { put: async () => undefined, take: async () => null } }, /codeStore must implement put, take, markReplayed and wasReplayed/],
     ["an unknown reuse policy", { refreshTokenReuse: "ignore" }, /refreshTokenReuse must be/],
     ["no key provider", { keys: undefined }, /keys is required/],

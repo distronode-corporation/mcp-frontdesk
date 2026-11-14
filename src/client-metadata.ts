@@ -113,14 +113,16 @@ type FetchOutcome = PinnedGetResult | { ok: false; reason: "blocked" };
 
 /**
  * Run `get` under one deadline of `ms`: its signal aborts when the time is up,
- * and the answer is then `unreachable` even if `get` never settles.
+ * with a `TimeoutError` reason (so a host's fetch can tell a timeout from a
+ * cancel), and the answer is then `unreachable` even if `get` never settles. A
+ * body still being read is cancelled through the same signal.
  */
 function underDeadline(ms: number, get: (signal: AbortSignal) => Promise<FetchOutcome>): Promise<FetchOutcome> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<FetchOutcome>((resolve) => {
     timer = setTimeout(() => {
-      controller.abort();
+      controller.abort(new DOMException("The client metadata deadline passed", "TimeoutError"));
       resolve({ ok: false, reason: "unreachable" });
     }, ms);
   });
@@ -183,8 +185,9 @@ export class ClientMetadataFetcher {
         await res.body?.cancel().catch(() => undefined);
         return { ok: false, reason: res.status !== 200 ? "http_status" : "not_json" };
       }
-      const read = await readCapped(res.body, CLIENT_METADATA_MAX_BYTES, res.headers.get("content-length"));
-      if (!read.ok) return { ok: false, reason: "too_large" };
+      // The read stops at the deadline too, even when the host's fetch ignores the signal.
+      const read = await readCapped(res.body, CLIENT_METADATA_MAX_BYTES, res.headers.get("content-length"), signal);
+      if (!read.ok) return { ok: false, reason: read.reason === "too_large" ? "too_large" : "unreachable" };
       return { ok: true, contentType, cacheControl: res.headers.get("cache-control"), body: read.bytes };
     } catch {
       return { ok: false, reason: "unreachable" };

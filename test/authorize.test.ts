@@ -10,12 +10,12 @@ import {
   CHALLENGE,
   CLIENT_DOCUMENT,
   CLIENT_ID,
+  clock,
   harness,
   HOSTED_REDIRECT,
   ISSUER,
   RESOURCE,
 } from "./helpers.ts";
-
 
 /** What the token endpoint would pass to take. */
 const SPENT = { familyId: "f", ttlSeconds: 660 };
@@ -229,6 +229,37 @@ describe("approve", () => {
     assert.equal(t.reports[0]?.where, "keys.signingKey");
     assert.deepEqual(puts, [], "no code was stored");
     assert.deepEqual([...h.events, ...t.events], [], "no code was issued");
+  });
+
+  it("a clock that throws fails closed: no code, reported, never a throw out of approve", async () => {
+    const time = clock();
+    let calls = 0;
+    let failFrom = Infinity;
+    const flaky = {
+      now: () => {
+        calls += 1;
+        if (calls >= failFrom) throw new Error("clock down");
+        return time.now();
+      },
+      advance: time.advance,
+    };
+    const h = await harness({}, { clock: flaky });
+    // How many times the check alone reads the clock, so the next read is the issuance's.
+    calls = 0;
+    assert.ok((await h.fd.checkAuthorizeRequest(authorizeParams())).ok);
+    const checkReads = calls;
+
+    calls = 0;
+    failFrom = checkReads + 1;
+    assert.deepEqual(await h.fd.approve({ params: authorizeParams(), subject: "u" }), { ok: false, kind: "unavailable" });
+    assert.equal(h.reports.at(-1)?.where, "now");
+
+    // A clock that fails during the check as well.
+    calls = 0;
+    failFrom = 1;
+    assert.deepEqual(await h.fd.approve({ params: authorizeParams(), subject: "u" }), { ok: false, kind: "unavailable" });
+    assert.equal(h.reports.at(-1)?.where, "approve");
+    assert.ok(!h.events.some((e) => e.type === "code.issued"), "no code was issued");
   });
 
   it("hands out nothing when the code store write fails (safety property 3)", async () => {
