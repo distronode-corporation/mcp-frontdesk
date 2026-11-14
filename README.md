@@ -229,8 +229,8 @@ Each one is pinned by tests in `test/`.
    whole family, the successor included: reuse is indistinguishable from theft. That has a cost: a
    client that lost a refresh response and retries with the old token signs its person out. With
    `refreshTokenReuse: "refuse"`, only the reused token is refused and the successor keeps working;
-   a thief who refreshes first then keeps access until the family expires or is revoked. A live
-   (not yet rotated) token presented by a different client revokes the family in both modes. See
+   a thief who refreshes first then keeps access until the family expires or is revoked. The current
+   token of a family, presented by a different client, revokes the family in both modes. See
    [SECURITY-MODEL.md](SECURITY-MODEL.md).
 5. **No email in access tokens by default.** A token carries `sub`, `client_id`, `scope` and the
    registered claims. Add anything else with `accessTokenClaims`.

@@ -52,10 +52,10 @@ legitimate client lost the response to its last refresh and retried.
 - `"refuse"` refuses only the reused token. A retried refresh costs nothing, but an attacker who
   refreshes before the client does keeps a live token, and the client is the one refused.
 
-Choose `"refuse"` only if your clients retry refreshes and you accept that. In both modes, a live,
-unrotated refresh token presented by a client other than the one it was issued to revokes the
-family. A token already rotated is reuse first, so under `"refuse"` it is only refused, whoever
-presents it.
+Choose `"refuse"` only if your clients retry refreshes and you accept that. In both modes, the
+current refresh token of a family (the newest, not yet replaced by a refresh), presented by a client
+other than the one it was issued to, revokes the family. A token that a refresh has already replaced
+is reuse first, so under `"refuse"` it is only refused, whoever presents it.
 
 ## What it does not protect
 
