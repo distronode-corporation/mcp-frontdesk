@@ -10,8 +10,9 @@
  *     lookup;
  *   - the name is resolved once, through the resolver the caller supplies (the
  *     system resolver by default), and refused if ANY address is loopback,
- *     private, link-local, site-local, shared, reserved, documentation, multicast, or an
- *     IPv6 form that embeds one of those IPv4 addresses;
+ *     private, link-local, site-local, shared, reserved, documentation, multicast,
+ *     the deprecated 6to4 relay anycast and ORCHIDv1 blocks, or an IPv6 form that
+ *     embeds one of those IPv4 addresses;
  *   - the fetch then connects to exactly those addresses (see pinned-get.ts),
  *     so a second lookup at connect time cannot rebind the name inward.
  *
@@ -51,6 +52,7 @@ export function isPrivateOrReservedIpv4(host: string): boolean {
   if (a === 192 && b === 0 && (c === 0 || c === 2)) return true; // IETF special purpose, TEST-NET-1
   if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
   if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
+  if (a === 192 && b === 88 && c === 99) return true; // 6to4 relay anycast (deprecated, RFC 7526)
   if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
   return a >= 224; // multicast, reserved, broadcast
 }
@@ -96,6 +98,7 @@ export function isPrivateOrReservedIpv6(raw: string): boolean {
   if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return true; // local-use NAT64
   if (g0 === 0x2002) return embedded(g1, g2); // 6to4
   if (g0 === 0x2001 && (g1 === 0 || g1 === 0xdb8)) return true; // Teredo, documentation
+  if (g0 === 0x2001 && (g1 & 0xfff0) === 0x10) return true; // ORCHIDv1 2001:10::/28 (deprecated, never routed)
   if ((g0 & 0xffc0) === 0xfe80) return true; // link-local
   if ((g0 & 0xffc0) === 0xfec0) return true; // site-local (deprecated, still routed on some networks)
   if ((g0 & 0xfe00) === 0xfc00) return true; // unique local
