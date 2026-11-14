@@ -23,6 +23,10 @@ npm ci
 npm run typecheck
 npm run test:coverage   # 100% lines, branches and functions on src/, enforced
 npm pack --dry-run
+
+# The example server and its end-to-end test, against the build above
+npm run build
+cd examples/basic-server && npm ci && npm run typecheck && npm test
 ```
 
 - A flaky test is a bug. Fix the cause; do not add retries or loosen assertions.

@@ -61,6 +61,21 @@ What was decided while building v0.1.0, and why.
 - **`context` instead of a fixed tenant field.** The original bound every grant to one tenant.
   The package carries a string map from `approve` to the grant, the hooks and the claims hook.
 
+## The example server
+
+- **The MCP SDK's current line, v2.** The official TypeScript SDK ships v2 as split packages
+  (`@modelcontextprotocol/server`, `@modelcontextprotocol/client`); `@modelcontextprotocol/sdk` is
+  the v1 line, maintained on a branch. The example pins v2 exactly, and serves both protocol eras
+  through `createMcpHandler`, so 2025-era clients connect too.
+- **No framework, no SDK middleware package.** A small adapter (`src/node-http.ts`) turns
+  `node:http` into Web `Request` and `Response`, which both mcp-frontdesk and the SDK's handler take.
+- **Its own lockfile, linked to the checkout.** `mcp-frontdesk` is a `file:../..` dependency, so
+  the example runs against the package as built, and the root package stays free of the SDK.
+- **The end-to-end test uses the unsafe fetch, and says why.** A client_id is https on port 443,
+  and the SSRF guard refuses loopback addresses whatever resolver is injected, so a document served
+  by the test on loopback is reachable only through `unsafeFetchClientMetadata`. The test restricts
+  it to one host and checks separately that the guarded default refuses the same setup.
+
 ## Not carried over from the original
 
 - **Account and tenant checks** (membership, verified account, sessions cutoff, owner-only scopes):

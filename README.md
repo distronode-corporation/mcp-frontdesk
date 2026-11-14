@@ -251,10 +251,55 @@ gate (`"resource"`). With no `rateLimiter`, nothing limits:
 
 ## Example server
 
-<!-- The runnable example in examples/basic-server, and its end-to-end test, arrive in a follow-up commit on this pull request. -->
+[`examples/basic-server`](examples/basic-server) is a runnable MCP server on plain `node:http`:
+mcp-frontdesk for OAuth and the bearer gate, the official MCP TypeScript SDK
+(`@modelcontextprotocol/server`) for the protocol, a plain-HTML consent page behind a demo sign-in
+(pick an account, no password), in-memory stores, and three tools over made-up notes:
+`list_notes`, `read_note`, and `add_note`, which needs the `notes:write` scope. It listens on
+`127.0.0.1` over http, which mcp-frontdesk accepts for a loopback issuer and resource, and refuses
+any other `Host` header. It is not part of the published package.
 
-A runnable example on plain `node:http` (with the official MCP SDK, a demo sign-in and in-memory
-stores) is coming in `examples/basic-server`.
+```sh
+git clone https://github.com/distronode-corporation/mcp-frontdesk.git
+cd mcp-frontdesk
+npm ci && npm run build          # the example uses this checkout's build
+cd examples/basic-server
+npm ci
+npm start                        # serves http://127.0.0.1:3000/mcp (PORT=4000 npm start for another port)
+npm test                         # the end-to-end test
+```
+
+`npm start` accepts the clients in the `claudeClients` preset and fetches their metadata documents
+through the SSRF guard. `startExampleServer({ clients })` in `src/server.ts` takes other client
+hosts and redirect URIs.
+
+The end-to-end test runs on every commit, on Linux, macOS and Windows, over real sockets. It
+serves a client's metadata document itself and drives the server with the official SDK client
+(`@modelcontextprotocol/client`):
+
+1. Discovery: an MCP request with no token gets the 401 challenge, which leads to the protected
+   resource metadata and from there to the authorization server metadata.
+2. Authorize with PKCE S256 and `state`; the demo sign-in; the consent page names the client and
+   the host that vouches for it; approve (the form's CSRF token is checked).
+3. The code and its verifier for tokens.
+4. Tool calls through the SDK client, in both protocol eras the SDK serves (2026-07-28, and a
+   2025-era client answered statelessly).
+5. Refresh: a new access token and a new refresh token.
+6. The rotated refresh token presented again: `invalid_grant`, and the whole family is revoked,
+   so the successor is refused too and the connection is gone from `listGrants`.
+7. The access token minted before the revocation keeps working until its lifetime (10 minutes
+   by default) ends, then gets a 401 `invalid_token`: access tokens are not looked up, so revoking
+   a family ends a connection at its next refresh.
+
+The same file also covers `refreshTokenReuse: "refuse"` (the replay is refused and the successor
+keeps working), the 403 step-up challenge for `add_note` with a read-only token, the SDK client's
+own OAuth flow (discovery, the metadata document, PKCE, `state`, `iss`, and a refresh when the
+access token expires), a denied consent, a forged CSRF token, a foreign `Host`, and the rate limiter.
+
+One thing the test does differently from `npm start`: the SSRF guard refuses a loopback address
+even when it comes from an injected resolver (the last test checks exactly that), so the test
+reaches its own loopback document through `clientMetadata.unsafeFetchClientMetadata`, restricted to
+its one client host.
 
 ## Experimental: fencing untrusted text
 

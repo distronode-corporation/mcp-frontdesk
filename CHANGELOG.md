@@ -18,3 +18,5 @@ All notable changes to this project are documented here. The format follows
 - `keyProviderFromJwk`, `generateSigningJwk` and `publicJwk` for ES256 keys.
 - The `claudeClients` preset.
 - `mcp-frontdesk/experimental`: `createFence` for fencing untrusted text.
+- `examples/basic-server` (not published): a runnable server on `node:http` with the official MCP
+  TypeScript SDK, a demo sign-in and consent page, and an end-to-end test.

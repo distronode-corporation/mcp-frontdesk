@@ -56,3 +56,14 @@ jobs:
       # The built package resolves through its own exports map.
       - name: Exports smoke test
         run: node -e "Promise.all(['mcp-frontdesk','mcp-frontdesk/experimental','mcp-frontdesk/testing'].map((m) => import(m))).then((ms) => console.log(ms.map((m) => Object.keys(m).length)))"
+      # The example server against the package built above (its mcp-frontdesk dependency
+      # links to this checkout), driven end to end by the official MCP SDK client.
+      - name: Example server, install
+        working-directory: examples/basic-server
+        run: npm ci
+      - name: Example server, typecheck
+        working-directory: examples/basic-server
+        run: npm run typecheck
+      - name: Example server, end-to-end test
+        working-directory: examples/basic-server
+        run: npm test
