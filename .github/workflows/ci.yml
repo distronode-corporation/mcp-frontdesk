@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # release.yml runs this whole gate on the tagged commit before anything is published.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+        node: [22, 24]
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run typecheck
+      # 100% lines, branches and functions on src/, enforced by the script's thresholds.
+      - run: npm run test:coverage
+      - run: npm run build
+      # The published tarball holds dist/ and the documents in package.json "files", nothing else.
+      - name: Package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const [pack] = JSON.parse(require("fs").readFileSync("pack.json", "utf8"));
+            const allowed = /^(dist\/[a-z-]+\.(js|d\.ts)|README\.md|SECURITY-MODEL\.md|SECURITY\.md|SPEC\.md|CHANGELOG\.md|LICENSE|NOTICE|package\.json)$/;
+            const bad = pack.files.map((f) => f.path).filter((p) => !allowed.test(p));
+            if (bad.length) { console.error("unexpected files in the package:", bad); process.exit(1); }
+            console.log(pack.files.length + " files, " + pack.size + " bytes");
+          '
+      # The built package resolves through its own exports map.
+      - name: Exports smoke test
+        run: node -e "Promise.all(['mcp-frontdesk','mcp-frontdesk/experimental','mcp-frontdesk/testing'].map((m) => import(m))).then((ms) => console.log(ms.map((m) => Object.keys(m).length)))"
