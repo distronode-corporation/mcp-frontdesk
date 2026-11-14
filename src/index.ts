@@ -1,0 +1,44 @@
+/**
+ * mcp-frontdesk: an OAuth 2.1 authorization server and access-token gate for
+ * MCP servers. See README.md.
+ */
+export { createFrontdesk, type Frontdesk } from "./frontdesk.ts";
+export {
+  claudeClients,
+  DEFAULT_TTL,
+  FrontdeskConfigError,
+  type AuditEvent,
+  type AuditSink,
+  type FrontdeskConfig,
+  type GrantInfo,
+  type RateLimitedEndpoint,
+  type RateLimiter,
+  type RefreshTokenReusePolicy,
+  type Reporter,
+  type ResolvedConfig,
+  type TokenWrapper,
+} from "./config.ts";
+export type {
+  ApproveParams,
+  ApproveResult,
+  AuthorizeCheck,
+  AuthorizePageError,
+  AuthorizeRedirectError,
+  AuthorizeRequest,
+  RawAuthorizeParams,
+} from "./authorize.ts";
+export type { VerifiedAccessToken } from "./access-token.ts";
+export { bearerTokenFrom, type AuthenticateOptions, type AuthenticateResult } from "./gate.ts";
+export { generateSigningJwk, KeyConfigError, keyProviderFromJwk, publicJwk, type KeyProvider, type SigningKey } from "./keys.ts";
+export { MemoryCodeStore, MemoryGrantStore, type MemoryStoreOptions } from "./memory-stores.ts";
+export type { HostResolver, ResolvedAddress } from "./ssrf.ts";
+export type {
+  CodeRecord,
+  CodeStore,
+  GrantContext,
+  GrantRecord,
+  GrantStore,
+  GrantSummary,
+  NewGrant,
+  RotateOutcome,
+} from "./stores.ts";
