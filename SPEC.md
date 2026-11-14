@@ -87,9 +87,20 @@ request for `offline_access` alone included). `approve` may narrow them, never w
 - `authorization_code`: `code`, `code_verifier`, `redirect_uri` required; `resource` absent or equal
   (`invalid_target`). Then the code is taken (spent), and the client, the exact redirect URI, the
   verifier and `isGrantActive` are checked. Any failure: `invalid_grant`.
+- Replay (RFC 6749 section 4.1.2): the family id is chosen before the take, and the take leaves a
+  tombstone naming it for the code's lifetime plus 10 minutes. A take that finds no record asks
+  `markReplayed`; a tombstone there means the code was spent, and its family is revoked (audit
+  `code.replayed` with the count).
+  After writing a new grant, the redemption asks `wasReplayed`; true (or a store that cannot say)
+  revokes the new family (audit `grant.revoked`, reason `code_reuse`). Both answer `invalid_grant`.
+  A grant store that fails while revoking is `500 server_error`, as elsewhere.
 - `refresh_token`: `refresh_token` required; `resource` absent or equal; `scope`, when present, made
-  only of recognised scopes (`invalid_scope`, checked before rotation). The access token carries
-  the grant's own scopes, narrowed to the scopes configured now.
+  only of recognised scopes (`invalid_scope`, checked before the token is looked up). Then the token
+  is checked; only if it passes every check, a `scope` naming a resource scope the grant does not
+  hold is `invalid_scope` (RFC 6749 section 6), with nothing rotated or revoked. `offline_access`
+  is never counted as more than the grant. A `scope` naming fewer scopes is accepted and not
+  narrowed: the access token carries the grant's own scopes, narrowed only to the scopes configured
+  now, and the response's `scope` lists them.
 - A scope removed from `scopes` since the grant (or the code) was made is dropped from what is
   minted and from the successor grant, and the response's `scope` lists what was granted (RFC 6749
   sections 3.3 and 6). A grant or code left with no scope: `invalid_grant`, and a grant's family is
@@ -121,8 +132,12 @@ token missing a required scope is 403 with `error="insufficient_scope"` and `sco
 
 ## Grants
 
-A family starts at the code exchange. Each refresh claims the presented row and inserts its successor
-atomically. Refusals: unknown, reused (family revoked under `"revoke-family"`), revoked, expired,
-wrong client (family revoked), inactive (family revoked). A rotation that finds the family revoked
-revokes it again, so no successor survives. Rotated rows are kept until their own expiry, because a
-rotated row presented again is how reuse is detected.
+A family starts at the code exchange, which is its `familyCreatedAt`, carried on every row. Each
+refresh claims the presented row and inserts its successor atomically. A row expires
+`ttl.refreshToken` after it was written, or at the family's end (`familyCreatedAt` plus
+`maxFamilyLifetimeSeconds`, default 30 days), whichever is earlier. Refusals, checked in this order:
+unknown, reused (family revoked under `"revoke-family"`), revoked, past the family's end (family
+revoked), expired, wrong client (family revoked), inactive (family revoked), no scope left (family
+revoked), a scope the grant does not hold (`invalid_scope`, nothing revoked). A rotation that finds
+the family revoked revokes it again, so no successor survives. Rotated rows are kept until their own
+expiry, because a rotated row presented again is how reuse is detected.

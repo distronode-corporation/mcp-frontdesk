@@ -46,9 +46,41 @@ What was decided while building v0.1.0, and why.
   instead of discarding the connection.
 - **A rate-limited token request answers `slow_down` with 429 and `Retry-After`.** OAuth has no
   error code for rate limiting; this keeps the behaviour of the server this was extracted from.
-- **The refresh `scope` parameter is validated, never used to narrow.** The access token carries the
-  grant's scopes (less any the config has since removed, below). Narrowing per refresh at the
-  client's request is allowed by RFC 6749 but no MCP client was seen to use it.
+- **The refresh `scope` parameter is checked, never used to narrow.** A scope beyond the grant is
+  `invalid_scope` (RFC 6749 section 6 says it MUST NOT be included); the grant's scopes or fewer are
+  accepted, and the access token carries the grant's scopes (less any the config has since removed,
+  below). Narrowing per refresh at the client's request is allowed by RFC 6749 but no MCP client was
+  seen to use it.
+- **`invalid_scope` on a refresh comes after every check of the token.** The rule is that a refusal
+  of a code or a grant never says why. The grant's scopes are known only once its row is found, so
+  answering `invalid_scope` as soon as the row is found would tell a caller that a rotated, revoked
+  or expired token once existed, and answering it partway through the checks would reveal which of
+  them a token passed. Deciding it last means only a token that would have refreshed sees
+  `invalid_scope`, and a rotated token presented with a wider scope is still reuse (and revokes its
+  family under the default policy). Scopes this server does not recognise at
+  all are refused before the token is looked up, because that answer depends on nothing but the
+  request.
+- **A replayed code revokes its family, through a tombstone in the code store.** RFC 6749 section
+  4.1.2 says the server SHOULD revoke what a code issued when the code is used twice. The token
+  endpoint chooses the family id before the take; the take leaves a tombstone naming it in the same
+  atomic step; a replay's take finds no record and asks `markReplayed`. A replay can land between
+  the first redemption's take and its grant insert, when there is no family yet to revoke, so the
+  replay also flags the tombstone and the first redemption checks the flag after its insert. Every
+  ordering of the two then ends with the family revoked and no token handed out on the late side.
+  The cost is one extra code store read per successful exchange.
+- **The tombstone lives for the code's lifetime plus 10 minutes** (11 minutes at the default 60 s).
+  A legitimate redemption and any replay both happen while the code is valid; after that the code
+  is refused as expired anyway. The 10 minutes cover clock skew between instances and a slow retry,
+  and keep the store at one small entry per sign-in for minutes, not days. It is a constant, not a
+  setting: a shorter one would only weaken the check, and a longer one buys nothing.
+- **A code store without the tombstone is refused at startup, not tolerated.** The tombstone could
+  have been optional (revoke when the store supports it). That would make the protection silently
+  absent for exactly the hosts that wrote their own store before it existed, and nothing would ever
+  say so. `createFrontdesk` instead throws `FrontdeskConfigError` when `markReplayed` or
+  `wasReplayed` is missing, and the contract suite checks that they work. The package is not yet
+  published, so no adopter is broken by the requirement. At run time the check fails closed too: a
+  `markReplayed` that throws is the same `invalid_grant` (reported), and a `wasReplayed` that throws
+  revokes the new family and refuses.
 - **A removed scope narrows a grant; it does not end it.** When the config drops a scope, a refresh
   (or a code approved earlier) is answered with the scopes still configured, and the `scope` field
   says so: RFC 6749 lets the server issue less than was asked (section 3.3), and a refresh may never
@@ -72,6 +104,18 @@ What was decided while building v0.1.0, and why.
   ours, and checks `exp` as written; a token minted with a longer `exp` still dies on schedule.
 - **Refresh reuse is configurable.** Revoking the family is the safer default, and it can sign a person
   out after a retried refresh; some deployments prefer the other trade (SECURITY-MODEL.md).
+- **A family has an absolute lifetime, `maxFamilyLifetimeSeconds`, 30 days by default.** The refresh
+  lifetime slides on every rotation, so without a cap a family refreshed at least once a month never
+  ends, and a stolen copy that is never caught (under `"refuse"`, or before the client's next
+  refresh) lives as long as the thief keeps refreshing. The cap is counted from `familyCreatedAt`,
+  the code exchange, which every row of the family carries. A refresh at or after the end is refused
+  with the same `invalid_grant` and revokes the family, so the connection disappears from
+  `listGrants` at once rather than lingering until a row expires; each row's own expiry is also
+  capped at the end. 30 days bounds a stolen family to a month and costs a person one sign-in a
+  month per client, which suits a connector people approve once and use daily; a host that wants
+  fewer sign-ins can raise it, and one that wants tighter control can lower it. It is counted from
+  the exchange, not from consent (`authorizedAt`), because the two differ by at most the code's
+  lifetime and the family is what the cap bounds.
 - **`isGrantActive` instead of built-in account checks.** The server this was extracted from
   re-checked tenant membership, account verification and a revocation cutoff on every refresh.
   Those are product rules, so the package asks one hook, at the code exchange and every refresh,

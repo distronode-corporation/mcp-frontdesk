@@ -168,7 +168,8 @@ Optional:
 | `allowLoopbackRedirects` | `false` | Accept `http://localhost`, `127.0.0.1`, `[::1]` redirects on any port (native clients). |
 | `ttl.authorizationCode` | 60 s | Code lifetime. |
 | `ttl.accessToken` | 600 s | Access-token lifetime, and its maximum age at verification. |
-| `ttl.refreshToken` | 30 days | Sliding: reset on every rotation. |
+| `ttl.refreshToken` | 30 days | Sliding: reset on every rotation, never past the family's end. |
+| `maxFamilyLifetimeSeconds` | 30 days | Absolute: a connection ends this long after its first sign-in, however often it refreshes. The person signs in again. |
 | `refreshTokenReuse` | `"revoke-family"` | Or `"refuse"`. See below. |
 | `accessTokenClaims(grant)` | none | Extra claims. Registered claims cannot be set. |
 | `isGrantActive(grant)` | none | Asked at the code exchange and every refresh. False ends the grant. |
@@ -187,9 +188,14 @@ You implement two interfaces (`CodeStore`, `GrantStore`, in `stores.ts`). Stores
 SHA-256 hashes, never a code or a refresh token.
 
 - `CodeStore.take` must be atomic: of concurrent calls for one hash, at most one gets the record.
+  The call that gets it also leaves a tombstone, in the same step, naming the family the redemption
+  starts, for the code's lifetime plus 10 minutes. `markReplayed` flags that tombstone and answers
+  its family; `wasReplayed` reads the flag. That is how a replayed code revokes what its first
+  redemption issued. `createFrontdesk` refuses a code store without these methods.
 - `GrantStore.rotate` must claim the row and insert its successor as one unit, and refuse when the
   row or any row of its family is revoked. `revokeFamily` must also catch a successor that a racing
-  rotation inserted.
+  rotation inserted. Every row keeps `familyCreatedAt` as written: the family's absolute lifetime
+  is counted from it.
 
 `MemoryCodeStore` and `MemoryGrantStore` are correct for one process and lose everything on
 restart. For anything else, write your own and run the contract suite against it in your tests:
@@ -224,14 +230,21 @@ Each one is pinned by tests in `test/`.
    The reason goes to your audit sink only. A code store that fails is a refusal, never a token. A
    code is spent by the first well-formed request that presents it, right or wrong. A request
    refused before the code store is asked (a missing field, another `resource`, a verifier too
-   malformed to ever match, no signing key) leaves the code where it was.
+   malformed to ever match, no signing key) leaves the code where it was. A spent code presented
+   again is answered with the same `invalid_grant`, and revokes the family its first redemption
+   started (RFC 6749 section 4.1.2), even when that replay lands while the first redemption is
+   still in flight. A refresh that names a scope the grant never had gets `invalid_scope`, but only
+   once the refresh token has passed every check, so a dead token gets `invalid_grant` whatever
+   scope it names.
 4. **Refresh tokens rotate on every use.** By default, a rotated token presented again revokes its
    whole family, the successor included: reuse is indistinguishable from theft. That has a cost: a
    client that lost a refresh response and retries with the old token signs its person out. With
    `refreshTokenReuse: "refuse"`, only the reused token is refused and the successor keeps working;
-   a thief who refreshes first then keeps access until the family expires or is revoked. The current
-   token of a family, presented by a different client, revokes the family in both modes. See
-   [SECURITY-MODEL.md](SECURITY-MODEL.md).
+   a thief who refreshes first then keeps refreshing for at most `maxFamilyLifetimeSeconds` (30
+   days by default) from the first sign-in, plus the lifetime of the last access token minted, and
+   less if the family is revoked, a later reuse is detected, or no one refreshes it for
+   `ttl.refreshToken`. The current token of a family, presented by a
+   different client, revokes the family in both modes. See [SECURITY-MODEL.md](SECURITY-MODEL.md).
 5. **No email in access tokens by default.** A token carries `sub`, `client_id`, `scope` and the
    registered claims. Add anything else with `accessTokenClaims`.
 6. **A wrap hook for codes and refresh tokens.** A host running several deployments can decorate
@@ -321,6 +334,9 @@ its own block. The shape of this entry may change in a minor release.
   Documents (dynamic registration is deprecated in the MCP specification).
 - No JWKS endpoint: tokens are verified by the server that minted them.
 - No confidential clients, no `client_credentials`, no token introspection or revocation endpoint.
+- No scope narrowing on refresh: a refresh may name the grant's scopes or fewer, but the new token
+  always carries all of the grant's scopes (the response's `scope` says which). Naming a scope the
+  grant does not hold is `invalid_scope`.
 - No sign-in, sessions or consent UI.
 
 The full list, with the RFCs and the specification version, is in [SPEC.md](SPEC.md).
