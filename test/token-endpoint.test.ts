@@ -97,8 +97,13 @@ describe("token endpoint: authorization_code", () => {
   it("refuses an expired code even if the store still returns it", async () => {
     const h = await harness();
     const code = await approveCode(h);
-    const record = await h.codes.take(sha256Hex(code));
-    const stale: CodeStore = { put: async () => undefined, take: async () => ({ ...record!, expiresAt: h.clock.now() }) };
+    const record = await h.codes.take(sha256Hex(code), { familyId: "f", ttlSeconds: 60 });
+    const stale: CodeStore = {
+      put: async () => undefined,
+      take: async () => ({ ...record!, expiresAt: h.clock.now() }),
+      markReplayed: async () => null,
+      wasReplayed: async () => false,
+    };
     const s = await harness({ codeStore: stale }, { clock: h.clock });
     assert.deepEqual(slim(await post(s, codeForm(code))), INVALID_GRANT);
     assert.equal((s.events.at(-1) as { reason: string }).reason, "expired");
@@ -107,7 +112,12 @@ describe("token endpoint: authorization_code", () => {
   it("a code store that throws is a refusal, never a token (safety property 3)", async () => {
     const h = await harness();
     const code = await approveCode(h);
-    const broken: CodeStore = { put: async () => undefined, take: () => Promise.reject(new Error("store down")) };
+    const broken: CodeStore = {
+      put: async () => undefined,
+      take: () => Promise.reject(new Error("store down")),
+      markReplayed: async () => null,
+      wasReplayed: async () => false,
+    };
     const s = await harness({ codeStore: broken });
     assert.deepEqual(slim(await post(s, codeForm(code))), INVALID_GRANT);
     assert.equal(s.reports[0]?.where, "codeStore.take");
@@ -179,7 +189,7 @@ describe("token endpoint: authorization_code", () => {
       },
     });
     const take = h.codes.take.bind(h.codes);
-    h.codes.take = async (hash) => (takes++, take(hash));
+    h.codes.take = async (hash, spent) => (takes++, take(hash, spent));
     const code = await approveCode(h);
     assert.deepEqual(slim(await post(h, codeForm(`west.${code.slice(5)}`))), INVALID_GRANT);
     assert.equal(takes, 0);
@@ -309,7 +319,7 @@ describe("token endpoint: the request itself", () => {
     const code = await approveCode(h);
     assert.deepEqual(slim(await post(h, codeForm(code))), { status: 500, body: { error: "server_error" } });
     assert.equal(h.reports.at(-1)?.where, "tokenEndpoint");
-    assert.ok(await h.codes.take(sha256Hex(code)), "the code was not touched");
+    assert.ok(await h.codes.take(sha256Hex(code), { familyId: "f", ttlSeconds: 60 }), "the code was not touched");
   });
 
   it("answers CORS for an allowed origin, and refuses any other origin", async () => {
@@ -412,14 +422,15 @@ describe("token endpoint: refresh_token (safety property 4)", () => {
   });
 
   it("refuses an unknown, a revoked and an expired token with the same invalid_grant", async () => {
-    const h = await harness();
+    // A refresh lifetime shorter than the family's, so a token can expire before its family ends.
+    const h = await harness({ ttl: { refreshToken: 86_400 } });
     assert.deepEqual(slim(await post(h, refreshForm("never-issued"))), INVALID_GRANT);
     const revoked = await connect(h);
     const [grant] = await h.fd.listGrants("user-1");
     await h.fd.revokeGrant("user-1", grant!.familyId);
     assert.deepEqual(slim(await post(h, refreshForm(revoked.refresh_token))), INVALID_GRANT);
     const expiring = await connect(h);
-    h.clock.advance(30 * 86_400_000);
+    h.clock.advance(86_400_000);
     assert.deepEqual(slim(await post(h, refreshForm(expiring.refresh_token))), INVALID_GRANT);
     assert.deepEqual(
       h.events.filter((e) => e.type === "token.refused").map((e) => (e as { reason: string }).reason),
@@ -448,14 +459,243 @@ describe("token endpoint: refresh_token (safety property 4)", () => {
       status: 400,
       body: { error: "invalid_target" },
     });
-    const widened = await post(h, refreshForm(first.refresh_token, { scope: "notes:read notes:write offline_access", resource: RESOURCE }));
-    assert.equal(widened.status, 200, "the refusals above did not cost the token");
-    assert.equal(widened.body.scope, "notes:read");
+    const same = await post(h, refreshForm(first.refresh_token, { scope: "notes:read offline_access", resource: RESOURCE }));
+    assert.equal(same.status, 200, "the refusals above did not cost the token");
+    assert.equal(same.body.scope, "notes:read");
+  });
+
+  it("refuses a scope the grant never had with invalid_scope, without spending the token (RFC 6749 section 6)", async () => {
+    const h = await harness();
+    const first = await connect(h);
+    assert.equal(first.scope, "notes:read");
+    for (const scope of ["notes:read notes:write", "notes:write", "notes:write offline_access"]) {
+      assert.deepEqual(slim(await post(h, refreshForm(first.refresh_token, { scope }))), { status: 400, body: { error: "invalid_scope" } }, scope);
+      assert.deepEqual(h.events.at(-1), { type: "token.refused", grantType: "refresh_token", reason: "scope_not_granted" }, scope);
+    }
+    assert.ok(!h.events.some((e) => e.type === "grant.revoked"), "a scope refusal revokes nothing");
+    const equal = await post(h, refreshForm(first.refresh_token, { scope: "notes:read" }));
+    assert.equal(equal.status, 200, "the refusals did not cost the token");
+    assert.equal(equal.body.scope, "notes:read");
+    const omitted = await post(h, refreshForm(equal.body.refresh_token));
+    assert.equal(omitted.status, 200);
+    assert.equal(omitted.body.scope, "notes:read");
+  });
+
+  it("checks the token before the scope: a dead token asking for more scope is invalid_grant, never invalid_scope", async () => {
+    const h = await harness();
+    assert.deepEqual(slim(await post(h, refreshForm("never-issued", { scope: "notes:write" }))), INVALID_GRANT);
+    const first = await connect(h);
+    const second = await post(h, refreshForm(first.refresh_token));
+    // A rotated token is reuse first: the family is revoked, whatever scope it names.
+    assert.deepEqual(slim(await post(h, refreshForm(first.refresh_token, { scope: "notes:write" }))), INVALID_GRANT);
+    assert.deepEqual(slim(await post(h, refreshForm(second.body.refresh_token, { scope: "notes:write" }))), INVALID_GRANT);
+    assert.ok(h.events.some((e) => e.type === "grant.revoked" && e.reason === "reuse"));
+    const other = await connect(h);
+    assert.deepEqual(
+      slim(await post(h, refreshForm(other.refresh_token, { scope: "notes:write", client_id: "https://client.example.com/other.json" }))),
+      INVALID_GRANT,
+      "another client's request is a client mismatch first",
+    );
+  });
+
+  it("does not narrow: a refresh naming fewer scopes than the grant gets the whole grant, and `scope` says so", async () => {
+    const h = await harness();
+    const first = await connect(h, { params: authorizeParams({ scope: "notes:read notes:write" }) });
+    const narrower = await post(h, refreshForm(first.refresh_token, { scope: "notes:read" }));
+    assert.equal(narrower.status, 200);
+    assert.equal(narrower.body.scope, "notes:read notes:write");
   });
 
   it("refuses a refresh with no refresh_token", async () => {
     const h = await harness();
     assert.deepEqual(slim(await post(h, refreshForm("", { refresh_token: undefined }))), { status: 400, body: { error: "invalid_request" } });
+  });
+});
+
+describe("token endpoint: a replayed authorization code (RFC 6749 section 4.1.2)", () => {
+  const otherClient = "https://client.example.com/other.json";
+
+  it("revokes the family the first redemption started, and answers the replay with the same invalid_grant", async () => {
+    const h = await harness();
+    const code = await approveCode(h);
+    const first = await post(h, codeForm(code));
+    assert.equal(first.status, 200);
+    const [grant] = await h.fd.listGrants("user-1");
+    assert.ok(grant);
+    assert.deepEqual(slim(await post(h, codeForm(code))), INVALID_GRANT);
+    assert.deepEqual(await h.fd.listGrants("user-1"), [], "the family is gone");
+    assert.deepEqual(slim(await post(h, refreshForm(first.body.refresh_token))), INVALID_GRANT, "its refresh token is dead");
+    // The gate does not look up family state: the access token already minted lives out its lifetime.
+    assert.ok((await h.fd.authenticate(resourceRequest(first.body.access_token))).ok);
+    assert.deepEqual(
+      h.events.filter((e) => e.type === "code.replayed" || (e.type === "token.refused" && e.grantType === "authorization_code")),
+      [
+        { type: "code.replayed", familyId: grant.familyId, revoked: 1 },
+        { type: "token.refused", grantType: "authorization_code", reason: "replayed" },
+      ],
+    );
+  });
+
+  it("revokes on any presentation of the spent code: another client, a wrong verifier, another redirect", async () => {
+    for (const replay of [
+      (code: string) => codeForm(code, { client_id: otherClient }),
+      (code: string) => codeForm(code, { code_verifier: "z".repeat(43) }),
+      (code: string) => codeForm(code, { redirect_uri: "http://127.0.0.1/callback" }),
+    ]) {
+      const h = await harness();
+      const code = await approveCode(h);
+      assert.equal((await post(h, codeForm(code))).status, 200);
+      assert.deepEqual(slim(await post(h, replay(code))), INVALID_GRANT);
+      assert.deepEqual(await h.fd.listGrants("user-1"), []);
+    }
+  });
+
+  it("revokes the successors a refresh already made", async () => {
+    const h = await harness();
+    const code = await approveCode(h);
+    const first = await post(h, codeForm(code));
+    const second = await post(h, refreshForm(first.body.refresh_token));
+    assert.equal(second.status, 200);
+    assert.deepEqual(slim(await post(h, codeForm(code))), INVALID_GRANT);
+    assert.deepEqual(slim(await post(h, refreshForm(second.body.refresh_token))), INVALID_GRANT);
+    assert.equal((h.events.find((e) => e.type === "code.replayed") as { revoked: number }).revoked, 2);
+  });
+
+  it("remembers the spent code for the code lifetime plus ten minutes, under the family the redemption started", async () => {
+    const h = await harness({ ttl: { authorizationCode: 90 } });
+    const seen: unknown[] = [];
+    const take = h.codes.take.bind(h.codes);
+    h.codes.take = async (hash, spent) => (seen.push(spent), take(hash, spent));
+    await connect(h);
+    const [grant] = await h.fd.listGrants("user-1");
+    assert.deepEqual(seen, [{ familyId: grant!.familyId, ttlSeconds: 90 + 600 }]);
+  });
+
+  it("a code that was never redeemed, or whose redemption failed, revokes nothing when presented again", async () => {
+    const h = await harness();
+    assert.deepEqual(slim(await post(h, codeForm("never-issued"))), INVALID_GRANT);
+    const code = await approveCode(h);
+    assert.deepEqual(slim(await post(h, codeForm(code, { code_verifier: "y".repeat(43) }))), INVALID_GRANT);
+    assert.deepEqual(slim(await post(h, codeForm(code))), INVALID_GRANT);
+    const other = await connect(h);
+    assert.equal((await h.fd.listGrants("user-1")).length, 1, "an unrelated connection is untouched");
+    assert.ok(other);
+    assert.deepEqual(
+      h.events.filter((e) => e.type === "code.replayed"),
+      [{ type: "code.replayed", familyId: (h.events.find((e) => e.type === "code.replayed") as { familyId: string }).familyId, revoked: 0 }],
+    );
+    assert.deepEqual(
+      h.events.filter((e) => e.type === "token.refused").map((e) => (e as { reason: string }).reason),
+      ["unknown", "pkce_mismatch", "replayed"],
+    );
+  });
+
+  it("a replay that arrives while the first redemption is still in flight ends the new family before any token is handed out", async () => {
+    // The replay lands before the grant is written (inside isGrantActive), and after it (inside insert).
+    for (const when of ["before the insert", "after the insert"] as const) {
+      let replay: Promise<unknown> | undefined;
+      let code = "";
+      const h = await harness({
+        isGrantActive: async () => {
+          if (when === "before the insert" && !replay) await (replay = post(h, codeForm(code)));
+          return true;
+        },
+      });
+      const insert = h.grants.insert.bind(h.grants);
+      h.grants.insert = async (row) => {
+        await insert(row);
+        if (when === "after the insert" && !replay) await (replay = post(h, codeForm(code)));
+      };
+      code = await approveCode(h);
+      assert.deepEqual(slim(await post(h, codeForm(code))), INVALID_GRANT, when);
+      assert.deepEqual(slim((await replay) as { status: number; body: unknown }), INVALID_GRANT, when);
+      assert.deepEqual(await h.fd.listGrants("user-1"), [], when);
+      assert.ok(h.events.some((e) => e.type === "grant.revoked" && e.reason === "code_reuse"), when);
+      assert.ok(!h.reports.length, when);
+    }
+  });
+
+  it("a tombstone store that fails is still a refusal, never a token", async () => {
+    const h = await harness();
+    const code = await approveCode(h);
+    assert.equal((await post(h, codeForm(code))).status, 200);
+    h.codes.markReplayed = () => Promise.reject(new Error("store down"));
+    assert.deepEqual(slim(await post(h, codeForm(code))), INVALID_GRANT);
+    assert.equal(h.reports[0]?.where, "codeStore.markReplayed");
+    assert.equal((h.events.at(-1) as { reason: string }).reason, "store_failed");
+
+    // The in-flight check failing ends the new family: fail closed.
+    const s = await harness();
+    s.codes.wasReplayed = () => Promise.reject(new Error("store down"));
+    const again = await approveCode(s);
+    assert.deepEqual(slim(await post(s, codeForm(again))), INVALID_GRANT);
+    assert.equal(s.reports[0]?.where, "codeStore.wasReplayed");
+    assert.deepEqual(await s.fd.listGrants("user-1"), []);
+    assert.ok(s.events.some((e) => e.type === "grant.revoked" && e.reason === "code_reuse"));
+  });
+
+  it("a grant store that fails to revoke on a replay is a server error, like every grant store failure", async () => {
+    const h = await harness();
+    const code = await approveCode(h);
+    assert.equal((await post(h, codeForm(code))).status, 200);
+    h.grants.revokeFamily = () => Promise.reject(new Error("db down"));
+    assert.deepEqual(slim(await post(h, codeForm(code))), { status: 500, body: { error: "server_error" } });
+    assert.equal(h.reports[0]?.where, "tokenEndpoint");
+  });
+});
+
+describe("token endpoint: the family's absolute lifetime (maxFamilyLifetimeSeconds)", () => {
+  const DAY = 86_400_000;
+  const familyOf = async (h: Harness, refreshToken: string) => (await h.grants.findByTokenHash(sha256Hex(refreshToken)))?.familyId;
+
+  it("a family refreshed inside the sliding window still ends 30 days after it began: refused and revoked", async () => {
+    const h = await harness();
+    const createdAt = h.clock.now();
+    let tokens = await connect(h);
+    for (const step of [10, 10, 9]) {
+      h.clock.advance(step * DAY);
+      const next = await post(h, refreshForm(tokens.refresh_token));
+      assert.equal(next.status, 200);
+      tokens = next.body;
+    }
+    // Day 29: the successor's expiry is the family's end, not now plus the 30-day refresh lifetime.
+    assert.equal((await h.fd.listGrants("user-1"))[0]?.expiresAt.getTime(), createdAt + 30 * DAY);
+    h.clock.advance(DAY - 1);
+    const inside = await post(h, refreshForm(tokens.refresh_token));
+    assert.equal(inside.status, 200, "one millisecond before the end");
+    h.clock.advance(1);
+    assert.deepEqual(slim(await post(h, refreshForm(inside.body.refresh_token))), INVALID_GRANT);
+    assert.deepEqual(h.events.slice(-2), [
+      { type: "grant.revoked", subject: "user-1", clientId: CLIENT_ID, familyId: (await familyOf(h, inside.body.refresh_token))!, reason: "family_expired" },
+      { type: "token.refused", grantType: "refresh_token", reason: "family_expired" },
+    ]);
+    assert.deepEqual(await h.fd.listGrants("user-1"), []);
+  });
+
+  it("a lifetime shortened since the family began: refused and revoked at the next refresh, whatever the row's own expiry", async () => {
+    const h = await harness({ ttl: { refreshToken: 60 * 86_400 } });
+    const first = await connect(h);
+    // The same server restarted with a shorter lifetime: the stored row still says it is good for 60 days.
+    const s = await harness({ grantStore: h.grants, codeStore: h.codes, keys: h.keys, maxFamilyLifetimeSeconds: 7 * 86_400 }, { clock: h.clock });
+    h.clock.advance(7 * DAY - 1);
+    const inside = await post(s, refreshForm(first.refresh_token));
+    assert.equal(inside.status, 200);
+    h.clock.advance(1);
+    assert.deepEqual(slim(await post(s, refreshForm(inside.body.refresh_token))), INVALID_GRANT);
+    assert.equal((s.events.at(-1) as { reason: string }).reason, "family_expired");
+    assert.ok(s.events.some((e) => e.type === "grant.revoked" && e.reason === "family_expired"));
+    assert.deepEqual(await s.fd.listGrants("user-1"), []);
+  });
+
+  it("carries familyCreatedAt from the first row to every successor", async () => {
+    const h = await harness();
+    const createdAt = h.clock.now();
+    const first = await connect(h);
+    h.clock.advance(DAY);
+    const second = await post(h, refreshForm(first.refresh_token));
+    const row = await h.grants.findByTokenHash(sha256Hex(second.body.refresh_token));
+    assert.equal(row?.familyCreatedAt.getTime(), createdAt);
+    assert.equal(row?.createdAt.getTime(), createdAt + DAY);
   });
 });
 

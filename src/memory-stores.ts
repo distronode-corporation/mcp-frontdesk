@@ -7,7 +7,7 @@
  * Atomicity comes from JavaScript's single thread: each method does its reads
  * and writes without awaiting in between.
  */
-import type { CodeRecord, CodeStore, GrantRecord, GrantStore, GrantSummary, NewGrant, RotateOutcome } from "./stores.ts";
+import type { CodeRecord, CodeStore, GrantRecord, GrantStore, GrantSummary, NewGrant, RotateOutcome, SpentCode } from "./stores.ts";
 
 export interface MemoryStoreOptions {
   /** Clock in milliseconds. Defaults to `Date.now`. */
@@ -16,6 +16,7 @@ export interface MemoryStoreOptions {
 
 export class MemoryCodeStore implements CodeStore {
   readonly #codes = new Map<string, { record: CodeRecord; expiresAt: number }>();
+  readonly #spent = new Map<string, { familyId: string; replayed: boolean; expiresAt: number }>();
   readonly #now: () => number;
 
   constructor(options: MemoryStoreOptions = {}) {
@@ -27,17 +28,40 @@ export class MemoryCodeStore implements CodeStore {
     this.#codes.set(codeHash, { record: structuredClone(record), expiresAt: this.#now() + ttlSeconds * 1000 });
   }
 
-  async take(codeHash: string): Promise<CodeRecord | null> {
+  async take(codeHash: string, spent: SpentCode): Promise<CodeRecord | null> {
     const entry = this.#codes.get(codeHash);
     this.#codes.delete(codeHash);
-    if (!entry || entry.expiresAt <= this.#now()) return null;
+    const now = this.#now();
+    if (!entry || entry.expiresAt <= now) return null;
+    this.#spent.set(codeHash, { familyId: spent.familyId, replayed: false, expiresAt: now + spent.ttlSeconds * 1000 });
     return entry.record;
   }
 
-  /** Drop expired codes, so an abandoned flow does not stay in memory. */
+  async markReplayed(codeHash: string): Promise<string | null> {
+    const tombstone = this.#tombstone(codeHash);
+    if (!tombstone) return null;
+    tombstone.replayed = true;
+    return tombstone.familyId;
+  }
+
+  async wasReplayed(codeHash: string): Promise<boolean> {
+    return this.#tombstone(codeHash)?.replayed === true;
+  }
+
+  #tombstone(codeHash: string) {
+    const tombstone = this.#spent.get(codeHash);
+    if (tombstone && tombstone.expiresAt <= this.#now()) {
+      this.#spent.delete(codeHash);
+      return undefined;
+    }
+    return tombstone;
+  }
+
+  /** Drop expired codes and tombstones, so an abandoned flow does not stay in memory. */
   #sweep(): void {
     const now = this.#now();
     for (const [hash, entry] of this.#codes) if (entry.expiresAt <= now) this.#codes.delete(hash);
+    for (const [hash, entry] of this.#spent) if (entry.expiresAt <= now) this.#spent.delete(hash);
   }
 }
 

@@ -3,7 +3,7 @@
  * no product defaults: the URLs, scopes, client hosts and redirect URIs are
  * the host's. What has a default is derived from the host's own values
  * (`defaultScopes`, `resourcePaths`) or is a security parameter (the
- * lifetimes, `refreshTokenReuse`; see SPEC.md).
+ * lifetimes, `maxFamilyLifetimeSeconds`, `refreshTokenReuse`; see SPEC.md).
  */
 import type { HostResolver } from "./ssrf.ts";
 import type { KeyProvider } from "./keys.ts";
@@ -42,8 +42,23 @@ export type AuditEvent =
       subject: string;
       clientId: string;
       familyId: string;
-      /** `no_scope`: every scope of the grant was removed from the config. */
-      reason: "reuse" | "client_mismatch" | "inactive" | "no_scope" | "user";
+      /**
+       * `no_scope`: every scope of the grant was removed from the config.
+       * `family_expired`: a refresh came at or after `maxFamilyLifetimeSeconds`.
+       * `code_reuse`: the code that started the family was presented again
+       * while its redemption was still in flight.
+       */
+      reason: "reuse" | "client_mismatch" | "inactive" | "no_scope" | "family_expired" | "code_reuse" | "user";
+    }
+  | {
+      /**
+       * A spent authorization code was presented again. `familyId` is the family
+       * its first redemption started, and `revoked` how many of its rows were
+       * revoked now (0 when that redemption failed, or is still in flight).
+       */
+      type: "code.replayed";
+      familyId: string;
+      revoked: number;
     }
   | { type: "token.refused"; grantType: "authorization_code" | "refresh_token"; reason: string };
 
@@ -107,6 +122,13 @@ export interface FrontdeskConfig {
   /** Default "revoke-family". See SECURITY-MODEL.md for the trade-off. */
   refreshTokenReuse?: RefreshTokenReusePolicy;
   /**
+   * The absolute lifetime of a grant family, in seconds from its first sign-in
+   * (the code exchange). A refresh at or after it is refused and revokes the
+   * family, however recently the family was refreshed; the person signs in
+   * again. Default 30 days (`DEFAULT_MAX_FAMILY_LIFETIME_SECONDS`).
+   */
+  maxFamilyLifetimeSeconds?: number;
+  /**
    * Extra access-token claims (an email, a tenant id). Registered claims
    * (`iss`, `sub`, `aud`, `exp`, `iat`, `nbf`, `jti`, `scope`, `client_id`)
    * cannot be set here.
@@ -154,6 +176,7 @@ export interface ResolvedConfig {
   accessTtlSeconds: number;
   refreshTtlSeconds: number;
   refreshTokenReuse: RefreshTokenReusePolicy;
+  maxFamilyLifetimeSeconds: number;
   now: () => number;
 }
 
@@ -161,6 +184,9 @@ export const OFFLINE_ACCESS = "offline_access";
 
 /** Default lifetimes, in seconds. */
 export const DEFAULT_TTL = { authorizationCode: 60, accessToken: 600, refreshToken: 30 * 24 * 60 * 60 } as const;
+
+/** The default absolute lifetime of a grant family: 30 days, in seconds. */
+export const DEFAULT_MAX_FAMILY_LIFETIME_SECONDS = 30 * 24 * 60 * 60;
 
 /** RFC 6749 section 3.3 scope-token. */
 const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
@@ -234,11 +260,13 @@ function endpoint(name: string, raw: unknown, issuer: string): string {
   return url.href;
 }
 
-function ttl(name: string, raw: number | undefined, fallback: number): number {
+function seconds(name: string, raw: number | undefined, fallback: number): number {
   const value = raw ?? fallback;
-  if (!Number.isInteger(value) || value <= 0) fail(`ttl.${name} must be a positive integer number of seconds`);
+  if (!Number.isInteger(value) || value <= 0) fail(`${name} must be a positive integer number of seconds`);
   return value;
 }
+
+const ttl = (name: string, raw: number | undefined, fallback: number) => seconds(`ttl.${name}`, raw, fallback);
 
 export function resolveConfig(config: FrontdeskConfig): ResolvedConfig {
   if (typeof config !== "object" || config === null) fail("a config object is required");
@@ -283,6 +311,12 @@ export function resolveConfig(config: FrontdeskConfig): ResolvedConfig {
   ] as const) {
     if (typeof value !== "object" || value === null) fail(`${name} is required`);
   }
+  // Checked here rather than at the first replay: a store without the tombstone
+  // would otherwise run, and a replayed code would quietly revoke nothing.
+  const codeStore = config.codeStore as unknown as Record<string, unknown>;
+  if (!["put", "take", "markReplayed", "wasReplayed"].every((method) => typeof codeStore[method] === "function")) {
+    fail("codeStore must implement put, take, markReplayed and wasReplayed (see the store contract in mcp-frontdesk/testing)");
+  }
 
   return {
     issuer,
@@ -302,6 +336,7 @@ export function resolveConfig(config: FrontdeskConfig): ResolvedConfig {
     accessTtlSeconds: ttl("accessToken", config.ttl?.accessToken, DEFAULT_TTL.accessToken),
     refreshTtlSeconds: ttl("refreshToken", config.ttl?.refreshToken, DEFAULT_TTL.refreshToken),
     refreshTokenReuse: config.refreshTokenReuse ?? "revoke-family",
+    maxFamilyLifetimeSeconds: seconds("maxFamilyLifetimeSeconds", config.maxFamilyLifetimeSeconds, DEFAULT_MAX_FAMILY_LIFETIME_SECONDS),
     now: config.now ?? Date.now,
   };
 }

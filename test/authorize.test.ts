@@ -16,6 +16,9 @@ import {
   RESOURCE,
 } from "./helpers.ts";
 
+
+/** What the token endpoint would pass to take. */
+const SPENT = { familyId: "f", ttlSeconds: 660 };
 describe("checkAuthorizeRequest", () => {
   it("accepts a well-formed request and grants the default scopes when none is named", async () => {
     const h = await harness();
@@ -164,7 +167,7 @@ describe("approve", () => {
     assert.equal(url.searchParams.get("iss"), ISSUER);
     const code = url.searchParams.get("code")!;
     assert.match(code, /^[A-Za-z0-9_-]{43}$/);
-    const record = await h.codes.take(sha256Hex(code));
+    const record = await h.codes.take(sha256Hex(code), SPENT);
     assert.deepEqual(record, {
       subject: "user-1",
       clientId: CLIENT_ID,
@@ -175,7 +178,7 @@ describe("approve", () => {
       authorizedAt: h.clock.now(),
       expiresAt: h.clock.now() + 60_000,
     });
-    assert.equal(await h.codes.take(code), null, "the store never holds the code itself");
+    assert.equal(await h.codes.take(code, SPENT), null, "the store never holds the code itself");
     assert.deepEqual(h.events, [{ type: "code.issued", subject: "user-1", clientId: CLIENT_ID, scopes: ["notes:read", "notes:write"] }]);
   });
 
@@ -192,7 +195,7 @@ describe("approve", () => {
     const params = authorizeParams({ scope: "notes:read notes:write" });
     const narrowed = await h.fd.approve({ params, subject: "user-1", scopes: ["notes:write"] });
     assert.ok(narrowed.ok);
-    const record = await h.codes.take(sha256Hex(new URL(narrowed.redirectUrl).searchParams.get("code")!));
+    const record = await h.codes.take(sha256Hex(new URL(narrowed.redirectUrl).searchParams.get("code")!), SPENT);
     assert.deepEqual(record?.scopes, ["notes:write"]);
     await assert.rejects(h.fd.approve({ params: authorizeParams(), subject: "user-1", scopes: ["notes:write"] }), TypeError);
     await assert.rejects(h.fd.approve({ params, subject: "user-1", scopes: [] }), TypeError);
@@ -214,6 +217,8 @@ describe("approve", () => {
     const codeStore: CodeStore = {
       put: async (hash) => void puts.push(hash),
       take: async () => null,
+      markReplayed: async () => null,
+      wasReplayed: async () => false,
     };
     const none: KeyProvider = { signingKey: async () => null, verificationKey: async () => null };
     const h = await harness({ keys: none, codeStore });
@@ -227,7 +232,9 @@ describe("approve", () => {
   });
 
   it("hands out nothing when the code store write fails (safety property 3)", async () => {
-    const h = await harness({ codeStore: { put: () => Promise.reject(new Error("write failed")), take: async () => null } });
+    const h = await harness({
+      codeStore: { put: () => Promise.reject(new Error("write failed")), take: async () => null, markReplayed: async () => null, wasReplayed: async () => false },
+    });
     assert.deepEqual(await h.fd.approve({ params: authorizeParams(), subject: "u" }), { ok: false, kind: "unavailable" });
     assert.equal(h.reports[0]?.where, "codeStore.put");
     assert.equal(h.events.length, 0);
@@ -241,7 +248,7 @@ describe("approve", () => {
     assert.ok(result.ok);
     const code = new URL(result.redirectUrl).searchParams.get("code")!;
     assert.match(code, /^code\.east\./);
-    assert.ok(await h.codes.take(sha256Hex(code.slice("code.east.".length))));
+    assert.ok(await h.codes.take(sha256Hex(code.slice("code.east.".length)), SPENT));
   });
 });
 

@@ -14,11 +14,20 @@
  *     is no oracle between "replayed", "wrong verifier", "expired" and "never
  *     existed". The reason goes to the audit sink, never to the client.
  *   - A code store that fails is a refusal, never an issue.
+ *   - A spent code presented again revokes the family its first redemption
+ *     started (RFC 6749 section 4.1.2), and is answered with the same
+ *     `invalid_grant`. The code's tombstone names that family; a replay that
+ *     lands while the first redemption is still in flight flags the tombstone,
+ *     and the first redemption, seeing the flag after its insert, revokes the
+ *     family it just wrote and refuses too.
+ *   - A refresh asking for a scope the grant never had is `invalid_scope`, and
+ *     is only decided once the token has passed every check, so a dead token
+ *     is `invalid_grant` whatever scope it names.
  *   - `Cache-Control: no-store` on every answer.
  */
 import { mintAccessToken } from "./access-token.ts";
 import { sameResource } from "./authorize.ts";
-import type { GrantInfo } from "./config.ts";
+import { OFFLINE_ACCESS, type GrantInfo } from "./config.ts";
 import type { Context } from "./context.ts";
 import { sha256Hex } from "./encoding.ts";
 import { createGrant, grantIsActive, liveScopes, rotateGrant } from "./grants.ts";
@@ -29,6 +38,14 @@ import type { CodeRecord } from "./stores.ts";
 
 /** A real token request is a few hundred bytes. */
 export const TOKEN_REQUEST_MAX_BYTES = 8 * 1024;
+
+/**
+ * How much longer than the code's own lifetime a spent code's tombstone is
+ * kept: 10 minutes. The first redemption and any replay both happen while the
+ * code is valid, so this only has to cover clock skew between instances and a
+ * slow retry; it keeps the store at one small entry per sign-in, for minutes.
+ */
+export const SPENT_CODE_GRACE_SECONDS = 10 * 60;
 
 const NO_STORE = { "Cache-Control": "no-store", Pragma: "no-cache" } as const;
 
@@ -98,9 +115,35 @@ export function createTokenEndpoint(ctx: Context) {
     });
   }
 
-  async function refused(request: Request, grantType: "authorization_code" | "refresh_token", reason: string) {
+  async function refused(request: Request, grantType: "authorization_code" | "refresh_token", reason: string, code: TokenError = "invalid_grant") {
     await ctx.audit({ type: "token.refused", grantType, reason });
-    return error(request, "invalid_grant");
+    return error(request, code);
+  }
+
+  /** A take found no record: if the code was spent, revoke what its first redemption started. */
+  async function spentCode(request: Request, codeHash: string): Promise<Response> {
+    let familyId: string | null;
+    try {
+      familyId = await hooks.codeStore.markReplayed(codeHash);
+    } catch (err) {
+      ctx.report("codeStore.markReplayed", err);
+      return refused(request, "authorization_code", "store_failed");
+    }
+    if (familyId === null) return refused(request, "authorization_code", "unknown");
+    // A grant store failure here propagates (500), as everywhere else: a retry revokes again.
+    const revoked = await hooks.grantStore.revokeFamily(familyId, new Date(config.now()));
+    await ctx.audit({ type: "code.replayed", familyId, revoked });
+    return refused(request, "authorization_code", "replayed");
+  }
+
+  /** After the insert: did a replay land while this redemption was in flight? A store that cannot say counts as yes. */
+  async function replayedInFlight(codeHash: string): Promise<boolean> {
+    try {
+      return await hooks.codeStore.wasReplayed(codeHash);
+    } catch (err) {
+      ctx.report("codeStore.wasReplayed", err);
+      return true;
+    }
   }
 
   async function authorizationCode(request: Request, form: Map<string, string>, clientId: string, key: SigningKey): Promise<Response> {
@@ -114,15 +157,18 @@ export function createTokenEndpoint(ctx: Context) {
     const bare = hooks.tokenWrapper ? hooks.tokenWrapper.unwrap("code", code) : code;
     if (bare === null) return refused(request, "authorization_code", "unknown");
 
+    const codeHash = sha256Hex(bare);
+    // Chosen before the take, so the tombstone the take leaves can name it.
+    const familyId = crypto.randomUUID();
     let record: CodeRecord | null;
     try {
-      record = await hooks.codeStore.take(sha256Hex(bare));
+      record = await hooks.codeStore.take(codeHash, { familyId, ttlSeconds: config.codeTtlSeconds + SPENT_CODE_GRACE_SECONDS });
     } catch (err) {
       ctx.report("codeStore.take", err);
       return refused(request, "authorization_code", "store_failed");
     }
     // The code is gone now, whatever the checks below say.
-    if (record === null) return refused(request, "authorization_code", "unknown");
+    if (record === null) return spentCode(request, codeHash);
     if (record.expiresAt <= config.now()) return refused(request, "authorization_code", "expired");
     if (record.clientId !== clientId) return refused(request, "authorization_code", "client_mismatch");
     // Exact, port included: the token request names the very URI the code was sent to (RFC 6749 section 4.1.3).
@@ -145,7 +191,17 @@ export function createTokenEndpoint(ctx: Context) {
     };
     if (!(await grantIsActive(ctx, pending))) return refused(request, "authorization_code", "inactive");
 
-    const grant = await createGrant(ctx, { subject: record.subject, clientId, scopes, context: record.context, authorizedAt }, minter(key));
+    const grant = await createGrant(
+      ctx,
+      { familyId, subject: record.subject, clientId, scopes, context: record.context, authorizedAt },
+      minter(key),
+    );
+    if (await replayedInFlight(codeHash)) {
+      // The replay found no family to revoke yet: end it here, before any token leaves.
+      await hooks.grantStore.revokeFamily(familyId, new Date(config.now()));
+      await ctx.audit({ type: "grant.revoked", subject: record.subject, clientId, familyId, reason: "code_reuse" });
+      return refused(request, "authorization_code", "replayed");
+    }
     return tokenResponse(request, grant.info, grant.issued, grant.refreshToken);
   }
 
@@ -153,18 +209,24 @@ export function createTokenEndpoint(ctx: Context) {
     const presented = form.get("refresh_token");
     if (!presented) return error(request, "invalid_request");
     if (!resourceOk(form)) return error(request, "invalid_target");
-    // RFC 6749 section 6: checked before the rotation, so a refused scope does
-    // not also cost the client its refresh token. What is minted is always the
-    // grant's own scopes: naming more never widens it.
+    // RFC 6749 section 6, in two steps, both before the rotation so a refused
+    // scope never costs the client its refresh token. Here, independent of the
+    // token: a scope this server does not recognise. In rotateGrant, after every
+    // check of the token: a scope the grant does not hold. `offline_access` is
+    // what a refresh token is, so it is never "more" than the grant.
     const asked = form.get("scope");
+    let requested: string[] | null = null;
     if (asked !== undefined) {
       const scopes = asked.split(" ").filter(Boolean);
       if (scopes.length === 0 || scopes.some((scope) => !config.requestableScopes.includes(scope))) {
         return error(request, "invalid_scope");
       }
+      requested = scopes.filter((scope) => scope !== OFFLINE_ACCESS);
     }
-    const rotated = await rotateGrant(ctx, presented, clientId, minter(key));
-    if (!rotated.ok) return refused(request, "refresh_token", rotated.reason);
+    const rotated = await rotateGrant(ctx, presented, clientId, requested, minter(key));
+    if (!rotated.ok) {
+      return refused(request, "refresh_token", rotated.reason, rotated.reason === "scope_not_granted" ? "invalid_scope" : "invalid_grant");
+    }
     return tokenResponse(request, rotated.grant.info, rotated.grant.issued, rotated.grant.refreshToken);
   }
 

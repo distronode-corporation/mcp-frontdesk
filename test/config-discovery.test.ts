@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
-import { claudeClients, DEFAULT_TTL, FrontdeskConfigError, resolveConfig, type FrontdeskConfig } from "../src/config.ts";
+import { claudeClients, DEFAULT_MAX_FAMILY_LIFETIME_SECONDS, DEFAULT_TTL, FrontdeskConfigError, resolveConfig, type FrontdeskConfig } from "../src/config.ts";
 import { createFrontdesk } from "../src/frontdesk.ts";
 import { authorizationServerMetadataUrl, protectedResourceMetadataUrl } from "../src/discovery.ts";
 import { MemoryCodeStore, MemoryGrantStore } from "../src/memory-stores.ts";
@@ -35,6 +35,8 @@ describe("resolveConfig", () => {
     assert.equal(config.accessTtlSeconds, 600);
     assert.equal(config.refreshTtlSeconds, 30 * 86_400);
     assert.equal(config.refreshTokenReuse, "revoke-family");
+    assert.equal(config.maxFamilyLifetimeSeconds, 30 * 86_400);
+    assert.equal(DEFAULT_MAX_FAMILY_LIFETIME_SECONDS, 2_592_000);
     assert.equal(config.now, Date.now);
     assert.equal(config.resourceName, undefined);
   });
@@ -49,6 +51,7 @@ describe("resolveConfig", () => {
       tokenEndpoint: "https://auth.example.com/oauth/token",
       ttl: { authorizationCode: 30, accessToken: 300, refreshToken: 3600 },
       refreshTokenReuse: "refuse",
+      maxFamilyLifetimeSeconds: 7 * 86_400,
     });
     assert.equal(config.tokenEndpoint, "https://auth.example.com/oauth/token");
     assert.equal(config.authorizationEndpoint, "http://localhost:3000/authorize");
@@ -56,6 +59,7 @@ describe("resolveConfig", () => {
     assert.equal(config.allowLoopbackRedirects, true);
     assert.deepEqual([config.codeTtlSeconds, config.accessTtlSeconds, config.refreshTtlSeconds], [30, 300, 3600]);
     assert.equal(config.refreshTokenReuse, "refuse");
+    assert.equal(config.maxFamilyLifetimeSeconds, 7 * 86_400);
   });
 
   const bad: [string, Partial<Record<keyof FrontdeskConfig, unknown>>, RegExp][] = [
@@ -91,6 +95,9 @@ describe("resolveConfig", () => {
     ["an http endpoint", { authorizationEndpoint: "http://auth.example.com/a" }, /authorizationEndpoint must be https/],
     ["a zero lifetime", { ttl: { accessToken: 0 } }, /ttl.accessToken must be a positive integer/],
     ["a fractional lifetime", { ttl: { refreshToken: 1.5 } }, /ttl.refreshToken/],
+    ["a zero family lifetime", { maxFamilyLifetimeSeconds: 0 }, /maxFamilyLifetimeSeconds must be a positive integer/],
+    ["a fractional family lifetime", { maxFamilyLifetimeSeconds: 1.5 }, /maxFamilyLifetimeSeconds must be a positive integer/],
+    ["a code store without the tombstone methods", { codeStore: { put: async () => undefined, take: async () => null } }, /codeStore must implement put, take, markReplayed and wasReplayed/],
     ["an unknown reuse policy", { refreshTokenReuse: "ignore" }, /refreshTokenReuse must be/],
     ["no key provider", { keys: undefined }, /keys is required/],
     ["no code store", { codeStore: null }, /codeStore is required/],

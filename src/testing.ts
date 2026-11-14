@@ -36,6 +36,9 @@ const CODE: CodeRecord = {
 let counter = 0;
 const unique = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter += 1)}`;
 
+/** What the token endpoint passes to `take`: the family the redemption will start, and how long to remember it. */
+const spent = (familyId = unique("fam")) => ({ familyId, ttlSeconds: 600 });
+
 export function codeStoreContract(makeStore: Factory<CodeStore>): ContractCase[] {
   return [
     {
@@ -44,15 +47,15 @@ export function codeStoreContract(makeStore: Factory<CodeStore>): ContractCase[]
         const store = await makeStore();
         const hash = unique("code");
         await store.put(hash, CODE, 60);
-        deepStrictEqual(await store.take(hash), CODE);
-        strictEqual(await store.take(hash), null);
+        deepStrictEqual(await store.take(hash, spent()), CODE);
+        strictEqual(await store.take(hash, spent()), null);
       },
     },
     {
       name: "code store: take of an unknown hash is null",
       async run() {
         const store = await makeStore();
-        strictEqual(await store.take(unique("never")), null);
+        strictEqual(await store.take(unique("never"), spent()), null);
       },
     },
     {
@@ -62,8 +65,8 @@ export function codeStoreContract(makeStore: Factory<CodeStore>): ContractCase[]
         const [a, b] = [unique("a"), unique("b")];
         await store.put(a, CODE, 60);
         await store.put(b, { ...CODE, subject: "user-2" }, 60);
-        strictEqual((await store.take(b))?.subject, "user-2");
-        strictEqual((await store.take(a))?.subject, "user-1");
+        strictEqual((await store.take(b, spent()))?.subject, "user-2");
+        strictEqual((await store.take(a, spent()))?.subject, "user-1");
       },
     },
     {
@@ -72,8 +75,63 @@ export function codeStoreContract(makeStore: Factory<CodeStore>): ContractCase[]
         const store = await makeStore();
         const hash = unique("race");
         await store.put(hash, CODE, 60);
-        const results = await Promise.all(Array.from({ length: 8 }, () => store.take(hash)));
+        const results = await Promise.all(Array.from({ length: 8 }, () => store.take(hash, spent())));
         strictEqual(results.filter((r) => r !== null).length, 1);
+      },
+    },
+    {
+      name: "code store: a take that returns the record leaves a tombstone naming its family",
+      async run() {
+        const store = await makeStore();
+        const hash = unique("code");
+        const family = unique("fam");
+        await store.put(hash, CODE, 60);
+        deepStrictEqual(await store.take(hash, spent(family)), CODE);
+        strictEqual(await store.wasReplayed(hash), false, "nothing replayed it yet");
+        strictEqual(await store.markReplayed(hash), family);
+        strictEqual(await store.wasReplayed(hash), true);
+        strictEqual(await store.markReplayed(hash), family, "a second replay names the same family");
+      },
+    },
+    {
+      name: "code store: a take with nothing to take leaves no tombstone, and never replaces one",
+      async run() {
+        const store = await makeStore();
+        const never = unique("never");
+        strictEqual(await store.take(never, spent()), null);
+        strictEqual(await store.markReplayed(never), null);
+        strictEqual(await store.wasReplayed(never), false);
+
+        const hash = unique("code");
+        const family = unique("fam");
+        await store.put(hash, CODE, 60);
+        await store.take(hash, spent(family));
+        strictEqual(await store.take(hash, spent(unique("other"))), null);
+        strictEqual(await store.markReplayed(hash), family, "the replay's take did not overwrite the tombstone");
+      },
+    },
+    {
+      name: "code store: a code that was put but never taken has no tombstone",
+      async run() {
+        const store = await makeStore();
+        const hash = unique("code");
+        await store.put(hash, CODE, 60);
+        strictEqual(await store.markReplayed(hash), null);
+        strictEqual(await store.wasReplayed(hash), false);
+        deepStrictEqual(await store.take(hash, spent()), CODE, "markReplayed did not spend the code");
+      },
+    },
+    {
+      name: "code store: of concurrent takes, the tombstone names the winner's family",
+      async run() {
+        const store = await makeStore();
+        const hash = unique("race");
+        await store.put(hash, CODE, 60);
+        const families = Array.from({ length: 8 }, () => unique("fam"));
+        const results = await Promise.all(families.map((family) => store.take(hash, spent(family))));
+        const winner = results.findIndex((r) => r !== null);
+        ok(winner !== -1, "one take got the record");
+        strictEqual(await store.markReplayed(hash), families[winner]);
       },
     },
   ];
@@ -90,6 +148,7 @@ function grantRow(familyId: string, overrides: Partial<NewGrant> = {}): NewGrant
     scopes: ["notes:read"],
     context: { tenant: "t-1" },
     authorizedAt: now,
+    familyCreatedAt: now,
     createdAt: now,
     expiresAt: new Date(now.getTime() + 86_400_000),
     ...overrides,
@@ -108,6 +167,20 @@ export function grantStoreContract(makeStore: Factory<GrantStore>): ContractCase
         await store.insert(row);
         deepStrictEqual(await store.findByTokenHash(row.tokenHash), { ...row, rotatedAt: null, revokedAt: null });
         strictEqual(await store.findByTokenHash(unique("nope")), null);
+      },
+    },
+    {
+      name: "grant store: familyCreatedAt is kept as written on every row of a family",
+      async run() {
+        const store = await makeStore();
+        const family = unique("fam");
+        const began = new Date(Date.UTC(2029, 5, 1));
+        const row = grantRow(family, { familyCreatedAt: began, createdAt: began });
+        await store.insert(row);
+        const next = grantRow(family, { familyCreatedAt: began, createdAt: T0 });
+        strictEqual(await store.rotate(row.id, T0, next), "rotated");
+        deepStrictEqual((await store.findByTokenHash(row.tokenHash))?.familyCreatedAt, began);
+        deepStrictEqual((await store.findByTokenHash(next.tokenHash))?.familyCreatedAt, began, "not the successor's own createdAt");
       },
     },
     {

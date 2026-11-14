@@ -17,6 +17,14 @@
  *     client_id, the family is revoked whatever the reuse policy. A token
  *     already rotated is reuse first, and the reuse policy decides.
  *   - `isGrantActive` is asked before every rotation; false revokes the family.
+ *   - A family has an absolute lifetime, `maxFamilyLifetimeSeconds` from its
+ *     first row (`familyCreatedAt`). Each row's sliding expiry is capped at that
+ *     end, and a refresh at or after it revokes the family, so refreshing within
+ *     `refreshTtlSeconds` cannot keep a family alive for ever.
+ *   - A refresh naming a scope the grant does not hold is refused, but only
+ *     after every check above passed: the answer (`invalid_scope` at the token
+ *     endpoint) is then given only to the holder of a live, correctly bound
+ *     token, and tells them nothing a successful refresh would not.
  *   - The grant's scopes are narrowed to the resource's configured scopes
  *     before anything is minted (a scope removed from the config is dropped
  *     from the successor, and never comes back without a new consent). A grant
@@ -53,7 +61,9 @@ export type RotateFailure =
   | "expired"
   | "client_mismatch"
   | "inactive"
-  | "no_scope";
+  | "no_scope"
+  | "family_expired"
+  | "scope_not_granted";
 
 export type RotateResult<T> = { ok: true; grant: IssuedGrant<T> } | { ok: false; reason: RotateFailure };
 
@@ -90,12 +100,27 @@ function freshToken(ctx: Context): { handed: string; tokenHash: string } {
   return { handed, tokenHash: sha256Hex(bare) };
 }
 
+/** When the family that began at `familyCreatedAt` ends, in milliseconds since the epoch. */
+function familyEnd(ctx: Context, familyCreatedAt: Date): number {
+  return familyCreatedAt.getTime() + ctx.config.maxFamilyLifetimeSeconds * 1000;
+}
+
 function newRow(
   ctx: Context,
-  base: { familyId: string; subject: string; clientId: string; scopes: readonly string[]; context: GrantContext; authorizedAt: Date },
+  base: {
+    familyId: string;
+    subject: string;
+    clientId: string;
+    scopes: readonly string[];
+    context: GrantContext;
+    authorizedAt: Date;
+    familyCreatedAt: Date;
+  },
   tokenHash: string,
   now: Date,
 ): NewGrant {
+  // Sliding, but never past the family's end.
+  const expiresAt = Math.min(now.getTime() + ctx.config.refreshTtlSeconds * 1000, familyEnd(ctx, base.familyCreatedAt));
   return {
     id: crypto.randomUUID(),
     familyId: base.familyId,
@@ -105,25 +130,27 @@ function newRow(
     scopes: [...base.scopes],
     context: { ...base.context },
     authorizedAt: new Date(base.authorizedAt),
+    familyCreatedAt: new Date(base.familyCreatedAt),
     createdAt: now,
-    expiresAt: new Date(now.getTime() + ctx.config.refreshTtlSeconds * 1000),
+    expiresAt: new Date(expiresAt),
   };
 }
 
 /**
- * Start a family, after a code was spent. `params.scopes` must already be
- * live (`liveScopes`) and non-empty, and `params.authorizedAt` is when the
- * person approved (carried in the code), not now. `issue` runs before the
- * insert, so a mint that fails leaves no grant behind.
+ * Start a family, after a code was spent. `params.familyId` is the id the
+ * code's tombstone already names, `params.scopes` must already be live
+ * (`liveScopes`) and non-empty, and `params.authorizedAt` is when the person
+ * approved (carried in the code), not now. The family begins now. `issue`
+ * runs before the insert, so a mint that fails leaves no grant behind.
  */
 export async function createGrant<T>(
   ctx: Context,
-  params: { subject: string; clientId: string; scopes: readonly string[]; context: GrantContext; authorizedAt: Date },
+  params: { familyId: string; subject: string; clientId: string; scopes: readonly string[]; context: GrantContext; authorizedAt: Date },
   issue: Issue<T>,
 ): Promise<IssuedGrant<T>> {
   const now = new Date(ctx.config.now());
   const { handed, tokenHash } = freshToken(ctx);
-  const row = newRow(ctx, { ...params, familyId: crypto.randomUUID() }, tokenHash, now);
+  const row = newRow(ctx, { ...params, familyCreatedAt: now }, tokenHash, now);
   const info = infoOf(row);
   const issued = await issue(info);
   await ctx.hooks.grantStore.insert(row);
@@ -132,11 +159,18 @@ export async function createGrant<T>(
 }
 
 /**
- * Exchange a refresh token for its successor, or refuse. `issue` runs after
- * every check and before the rotation is written: if it throws, nothing is
- * spent and the presented token still works.
+ * Exchange a refresh token for its successor, or refuse. `requested` is the
+ * resource scopes the request named (null when it named none). `issue` runs
+ * after every check and before the rotation is written: if it throws, nothing
+ * is spent and the presented token still works.
  */
-export async function rotateGrant<T>(ctx: Context, presented: string, clientId: string, issue: Issue<T>): Promise<RotateResult<T>> {
+export async function rotateGrant<T>(
+  ctx: Context,
+  presented: string,
+  clientId: string,
+  requested: readonly string[] | null,
+  issue: Issue<T>,
+): Promise<RotateResult<T>> {
   const store = ctx.hooks.grantStore;
   const bare = ctx.hooks.tokenWrapper ? ctx.hooks.tokenWrapper.unwrap("refresh_token", presented) : presented;
   if (bare === null) return { ok: false, reason: "unknown" };
@@ -145,7 +179,7 @@ export async function rotateGrant<T>(ctx: Context, presented: string, clientId: 
   const now = new Date(ctx.config.now());
 
   const kill = async (
-    reason: "reused" | "reused_concurrently" | "client_mismatch" | "inactive" | "no_scope",
+    reason: "reused" | "reused_concurrently" | "client_mismatch" | "inactive" | "no_scope" | "family_expired",
   ): Promise<{ ok: false; reason: RotateFailure }> => {
     await store.revokeFamily(row.familyId, now);
     await ctx.audit({
@@ -162,12 +196,16 @@ export async function rotateGrant<T>(ctx: Context, presented: string, clientId: 
 
   if (row.rotatedAt) return reuse("reused");
   if (row.revokedAt) return { ok: false, reason: "revoked" };
+  // Before the row's own expiry: a family past its end is revoked, not left to lapse.
+  if (now.getTime() >= familyEnd(ctx, row.familyCreatedAt)) return kill("family_expired");
   if (row.expiresAt.getTime() <= now.getTime()) return { ok: false, reason: "expired" };
   if (row.clientId !== clientId) return kill("client_mismatch");
   if (!(await grantIsActive(ctx, infoOf(row)))) return kill("inactive");
   // A grant whose every scope was removed from the config can never mint again.
   const scopes = liveScopes(ctx, row.scopes);
   if (scopes.length === 0) return kill("no_scope");
+  // RFC 6749 section 6: never more than the grant holds. Fewer is accepted and not narrowed (SPEC.md).
+  if (requested?.some((scope) => !scopes.includes(scope))) return { ok: false, reason: "scope_not_granted" };
 
   const { handed, tokenHash } = freshToken(ctx);
   const successor = newRow(ctx, { ...row, scopes }, tokenHash, now);

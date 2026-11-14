@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
 import { MemoryCodeStore, MemoryGrantStore } from "../src/memory-stores.ts";
-import type { CodeRecord, CodeStore, GrantRecord, GrantStore, NewGrant } from "../src/stores.ts";
+import type { CodeRecord, CodeStore, GrantRecord, GrantStore, NewGrant, SpentCode } from "../src/stores.ts";
 import { codeStoreContract, grantStoreContract } from "../src/testing.ts";
 import { clock } from "./helpers.ts";
 
@@ -23,6 +23,31 @@ describe("the contract suite catches broken stores", () => {
       await new Promise((resolve) => setImmediate(resolve));
       this.#map.delete(hash);
       return record;
+    }
+    async markReplayed() {
+      return null;
+    }
+    async wasReplayed() {
+      return false;
+    }
+  }
+
+  /** Atomic takes, but the tombstone is written by every take, so a replay's take overwrites the family. */
+  class OverwritingCodeStore extends MemoryCodeStore {
+    readonly #families = new Map<string, string>();
+    override async take(hash: string, spent: SpentCode) {
+      this.#families.set(hash, spent.familyId);
+      return super.take(hash, spent);
+    }
+    override async markReplayed(hash: string) {
+      return (await super.markReplayed(hash)) === null ? null : (this.#families.get(hash) ?? null);
+    }
+  }
+
+  /** Atomic takes, and no tombstone at all. */
+  class ForgetfulCodeStore extends MemoryCodeStore {
+    override async markReplayed() {
+      return null;
     }
   }
 
@@ -77,6 +102,27 @@ describe("the contract suite catches broken stores", () => {
     await assert.rejects(race.run());
   });
 
+  it("a take that leaves no tombstone fails the tombstone case", async () => {
+    const tombstone = codeStoreContract(() => new ForgetfulCodeStore()).find((c) => c.name.includes("leaves a tombstone"))!;
+    await assert.rejects(tombstone.run());
+  });
+
+  it("a take that replaces the tombstone of a spent code fails the replay case", async () => {
+    const overwrite = codeStoreContract(() => new OverwritingCodeStore()).find((c) => c.name.includes("never replaces one"))!;
+    await assert.rejects(overwrite.run(), /did not overwrite the tombstone/);
+  });
+
+  it("a store that does not keep familyCreatedAt fails the family-lifetime case", async () => {
+    class DroppingStore extends MemoryGrantStore {
+      override async findByTokenHash(tokenHash: string) {
+        const row = await super.findByTokenHash(tokenHash);
+        return row && { ...row, familyCreatedAt: row.createdAt };
+      }
+    }
+    const kept = grantStoreContract(() => new DroppingStore()).find((c) => c.name.includes("familyCreatedAt"))!;
+    await assert.rejects(kept.run());
+  });
+
   it("a non-atomic rotate fails the concurrency case", async () => {
     const race = grantStoreContract(() => new RacyGrantStore()).find((c) => c.name.includes("concurrent"))!;
     await assert.rejects(race.run());
@@ -89,26 +135,58 @@ describe("the contract suite catches broken stores", () => {
 });
 
 describe("MemoryCodeStore", () => {
+  const record: CodeRecord = { subject: "s", clientId: "c", redirectUri: "r", codeChallenge: "x", scopes: ["a"], context: {}, authorizedAt: 0, expiresAt: 0 };
+  const spent = (familyId: string, ttlSeconds = 600): SpentCode => ({ familyId, ttlSeconds });
+
   it("expires codes on its own clock and sweeps them on the next put", async () => {
     const time = clock();
     const store = new MemoryCodeStore({ now: time.now });
-    const record: CodeRecord = { subject: "s", clientId: "c", redirectUri: "r", codeChallenge: "x", scopes: ["a"], context: {}, authorizedAt: 0, expiresAt: 0 };
     await store.put("a", record, 60);
     await store.put("b", record, 120);
     time.advance(60_000);
-    assert.equal(await store.take("a"), null);
+    assert.equal(await store.take("a", spent("f")), null);
     await store.put("c", record, 60); // sweeps nothing more: b is still live
-    assert.ok(await store.take("b"));
+    assert.ok(await store.take("b", spent("f")));
     await store.put("d", record, 1);
     time.advance(1_000);
     await store.put("e", record, 60); // sweeps d
-    assert.equal(await store.take("d"), null);
+    assert.equal(await store.take("d", spent("f")), null);
+  });
+
+  it("an expired code it refuses leaves no tombstone", async () => {
+    const time = clock();
+    const store = new MemoryCodeStore({ now: time.now });
+    await store.put("a", record, 60);
+    time.advance(60_000);
+    assert.equal(await store.take("a", spent("f")), null);
+    assert.equal(await store.markReplayed("a"), null);
+  });
+
+  it("forgets a tombstone after its lifetime, on its own clock, and sweeps it on the next put", async () => {
+    const time = clock();
+    const store = new MemoryCodeStore({ now: time.now });
+    await store.put("a", record, 60);
+    await store.put("b", record, 60);
+    assert.ok(await store.take("a", spent("fa", 120)));
+    assert.ok(await store.take("b", spent("fb", 600)));
+    time.advance(119_999);
+    assert.equal(await store.wasReplayed("a"), false);
+    assert.equal(await store.markReplayed("a"), "fa", "still remembered just before its lifetime ends");
+    time.advance(1);
+    assert.equal(await store.wasReplayed("a"), false, "forgotten, replay flag and all");
+    assert.equal(await store.markReplayed("a"), null);
+    await store.put("c", record, 60); // sweeps nothing more: b's tombstone is still live
+    assert.equal(await store.markReplayed("b"), "fb");
+    time.advance(600_000);
+    await store.put("d", record, 60); // sweeps b's tombstone
+    assert.equal(await store.markReplayed("b"), null);
   });
 
   it("uses the wall clock by default", async () => {
     const store = new MemoryCodeStore();
-    await store.put("a", { subject: "s", clientId: "c", redirectUri: "r", codeChallenge: "x", scopes: ["a"], context: {}, authorizedAt: 0, expiresAt: 0 }, 60);
-    assert.ok(await store.take("a"));
+    await store.put("a", record, 60);
+    assert.ok(await store.take("a", spent("f")));
+    assert.equal(await store.markReplayed("a"), "f");
   });
 });
 
@@ -122,6 +200,7 @@ describe("MemoryGrantStore", () => {
     scopes: ["a"],
     context: {},
     authorizedAt: new Date(0),
+    familyCreatedAt: new Date(0),
     createdAt: new Date(0),
     expiresAt: new Date(1_000),
     ...over,

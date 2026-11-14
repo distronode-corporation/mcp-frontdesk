@@ -25,6 +25,17 @@ export interface CodeRecord {
   expiresAt: number;
 }
 
+/**
+ * What a spent code is remembered by. The token endpoint chooses the family id
+ * before it takes the code, so a replay can name the family the first
+ * redemption started (or was about to start).
+ */
+export interface SpentCode {
+  familyId: string;
+  /** How long to keep the tombstone, in seconds. Always longer than the code's own lifetime. */
+  ttlSeconds: number;
+}
+
 export interface CodeStore {
   /**
    * Store `record` under `codeHash` for `ttlSeconds`. Throw (or reject) when
@@ -35,8 +46,21 @@ export interface CodeStore {
    * Remove and return the record. MUST be atomic: of any number of concurrent
    * calls for one hash, at most one gets the record. Null when there is none.
    * Throwing is treated as a refusal, never as a licence to continue.
+   *
+   * The call that gets the record also leaves, in the same atomic step, a
+   * tombstone for `codeHash` naming `spent.familyId`, kept for at least
+   * `spent.ttlSeconds`. A call that gets null writes nothing: it never creates
+   * a tombstone, and never replaces one.
    */
-  take(codeHash: string): Promise<CodeRecord | null>;
+  take(codeHash: string, spent: SpentCode): Promise<CodeRecord | null>;
+  /**
+   * A spent code was presented again. ATOMIC: flag the tombstone for
+   * `codeHash` as replayed and answer the family id it names. Null when there
+   * is no tombstone (the code was never taken, or its tombstone lapsed).
+   */
+  markReplayed(codeHash: string): Promise<string | null>;
+  /** Has markReplayed flagged the tombstone for `codeHash`? False when there is none. */
+  wasReplayed(codeHash: string): Promise<boolean>;
 }
 
 /** One stored refresh token. Every rotation adds a row to the same family. */
@@ -50,6 +74,13 @@ export interface GrantRecord {
   context: GrantContext;
   /** When the person approved (the consent, carried in the code), the same on every row of a family. */
   authorizedAt: Date;
+  /**
+   * When the family's first row was written (the code exchange), the same on
+   * every row of a family. The family ends `maxFamilyLifetimeSeconds` after it,
+   * however often it is refreshed.
+   */
+  familyCreatedAt: Date;
+  /** When this row was written (the exchange, or the refresh that made it). */
   createdAt: Date;
   expiresAt: Date;
   rotatedAt: Date | null;

@@ -5,6 +5,7 @@
 export { createFrontdesk, type Frontdesk } from "./frontdesk.ts";
 export {
   claudeClients,
+  DEFAULT_MAX_FAMILY_LIFETIME_SECONDS,
   DEFAULT_TTL,
   FrontdeskConfigError,
   type AuditEvent,
@@ -41,4 +42,5 @@ export type {
   GrantSummary,
   NewGrant,
   RotateOutcome,
+  SpentCode,
 } from "./stores.ts";
