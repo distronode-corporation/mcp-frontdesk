@@ -435,27 +435,82 @@ describe("the example server, end to end", () => {
     const example = await start();
     try {
       const d = await discover(example.resource);
-      const localhost = example.origin.replace("127.0.0.1", "localhost");
-      const consent = await openConsent(d, "user-1");
-      const signIn = (origin: string) =>
-        fetch(new URL("/signin", example.origin), {
-          ...form({ account: "user-1", next: "/authorize?response_type=code" }),
-          headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: origin },
-          redirect: "manual",
+      const { port } = new URL(example.origin);
+      const localhost = `http://localhost:${port}`;
+      // fetch cannot set Host, and "localhost" may resolve to ::1, where nothing listens. So each
+      // request below goes to 127.0.0.1 carrying exactly what a browser on http://localhost sends:
+      // `Host: localhost:<port>`, and that page's Origin on the form posts.
+      const atLocalhost = (path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
+        new Promise<{ status: number; location: string | null; cookie: string | null; text: string }>((resolve, reject) => {
+          const req = httpRequest(
+            {
+              host: "127.0.0.1",
+              port,
+              path,
+              method: init.method ?? "GET",
+              headers: { Host: `localhost:${port}`, ...(init.body ? { "Content-Type": "application/x-www-form-urlencoded" } : {}), ...init.headers },
+            },
+            (res) => {
+              let text = "";
+              res.setEncoding("utf8");
+              res.on("data", (chunk: string) => (text += chunk));
+              res.on("end", () => {
+                const setCookie = res.headers["set-cookie"]?.[0];
+                resolve({ status: res.statusCode ?? 0, location: res.headers.location ?? null, cookie: setCookie ? setCookie.split(";")[0]! : null, text });
+              });
+            },
+          );
+          req.on("error", reject);
+          req.end(init.body);
         });
-      assert.equal((await signIn(localhost)).status, 303);
-      assert.equal((await signIn("http://attacker.example.com")).status, 400);
+      const post = (path: string, fields: Record<string, string>, headers: Record<string, string>) =>
+        atLocalhost(path, { method: "POST", headers, body: new URLSearchParams(fields).toString() });
 
-      const answer = (origin: string, decision: string) =>
-        fetch(d.authorizationEndpoint, {
-          ...form({ ...consent.fields, decision }),
-          headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: consent.cookie, Origin: origin },
-          redirect: "manual",
-        });
-      assert.equal((await answer("http://attacker.example.com", "approve")).status, 403);
-      const approved = await answer(localhost, "approve");
+      const { challenge } = pkce();
+      const authorize = new URL(d.authorizationEndpoint);
+      authorize.search = new URLSearchParams({
+        response_type: "code",
+        client_id: CLIENT_ID,
+        redirect_uri: REDIRECT_URI,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        state: "localhost-state",
+        resource: d.resource,
+      }).toString();
+      const path = `${authorize.pathname}${authorize.search}`;
+
+      // The authorization page, opened at localhost: the demo sign-in.
+      const signInPage = await atLocalhost(path);
+      assert.equal(signInPage.status, 200);
+      const next = hiddenFields(signInPage.text).next!;
+      assert.equal(next, path);
+
+      // Signing in from that page works; from a foreign page it does not.
+      assert.equal((await post("/signin", { account: "user-1", next }, { Origin: "http://attacker.example.com" })).status, 400);
+      const signedIn = await post("/signin", { account: "user-1", next }, { Origin: localhost });
+      assert.equal(signedIn.status, 303);
+      assert.match(signedIn.cookie ?? "", /^demo_session=/);
+
+      // The localhost session sees the consent page.
+      const consentPage = await atLocalhost(path, { headers: { Cookie: signedIn.cookie! } });
+      assert.equal(consentPage.status, 200);
+      const fields = hiddenFields(consentPage.text);
+
+      // Approving from a foreign page is refused; from the localhost page it mints a code.
+      const answer = (origin: string) => post(authorize.pathname, { ...fields, decision: "approve" }, { Cookie: signedIn.cookie!, Origin: origin });
+      assert.equal((await answer("http://attacker.example.com")).status, 403);
+      const approved = await answer(localhost);
       assert.equal(approved.status, 302);
-      assert.ok(new URL(approved.headers.get("location")!).searchParams.get("code"));
+      const back = new URL(approved.location!);
+      assert.equal(back.searchParams.get("state"), "localhost-state");
+      assert.ok(back.searchParams.get("code"));
+
+      // And the same forms still accept the 127.0.0.1 page.
+      const local = await fetch(new URL("/signin", example.origin), {
+        ...form({ account: "user-1", next }),
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: example.origin },
+      });
+      assert.equal(local.status, 303);
     } finally {
       await example.close();
     }

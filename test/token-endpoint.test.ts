@@ -320,6 +320,26 @@ describe("token endpoint: the request itself", () => {
     assert.deepEqual(slim(await post(h, codeForm(code))), { status: 500, body: { error: "server_error" } });
     assert.equal(h.reports.at(-1)?.where, "tokenEndpoint");
     assert.ok(await h.codes.take(sha256Hex(code), { familyId: "f", ttlSeconds: 60 }), "the code was not touched");
+
+    // Not one byte of the body is pulled: an endless body costs nothing once the limiter fails.
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulled += 1;
+          controller.enqueue(new Uint8Array(1024).fill(97));
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const req = new Request(`${ISSUER}/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: endless,
+      duplex: "half",
+    } as RequestInit);
+    assert.deepEqual(await (await h.fd.handleToken(req)).json(), { error: "server_error" });
+    assert.equal(pulled, 0, "the body was read before the rate limiter answered");
   });
 
   it("answers CORS for an allowed origin, and refuses any other origin", async () => {
