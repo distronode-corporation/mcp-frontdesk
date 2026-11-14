@@ -20,3 +20,15 @@ All notable changes to this project are documented here. The format follows
 - `mcp-frontdesk/experimental`: `createFence` for fencing untrusted text.
 - `examples/basic-server` (not published): a runnable server on `node:http` with the official MCP
   TypeScript SDK, a demo sign-in and consent page, and an end-to-end test.
+
+### Changed
+
+These change behaviour that earlier pre-release builds of this branch had. Nothing was published
+before 0.1.0.
+
+- `CodeRecord` gains a required `authorizedAt`: the time the person approved access. It travels
+  with the authorization code into the grant, so `isGrantActive` sees the consent time, not the
+  exchange time. A custom `CodeStore` must now persist `authorizedAt` with the rest of the record.
+- `sameResource` matches the resource indicator exactly, so an explicit `:443` (as in
+  `https://mcp.example.com:443/mcp`) no longer matches `https://mcp.example.com/mcp`.
+- Node.js 22.18 or later is required (`engines`), the oldest version the test matrix runs.
