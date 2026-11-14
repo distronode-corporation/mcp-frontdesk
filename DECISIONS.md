@@ -99,8 +99,8 @@ What was decided while building v0.1.0, and why.
 - **`approve` fails closed on a hook that throws.** A key provider, a store, the clock or the
   metadata fetch that throws is reported and answered `{ ok: false, kind: "unavailable" }`, with no
   code minted, as the token endpoint answers a failing hook with a refusal. Misuse of `approve`
-  itself (no subject, scopes outside the request, non-string context) still throws `TypeError`:
-  that is a bug in the host to fix, not a fault to ride out.
+  itself (no subject, params that are not an object, scopes outside the request, non-string
+  context) still throws `TypeError`: that is a bug in the host to fix, not a fault to ride out.
 - **The key is checked before anything is spent, once.** A burnt code the server could not turn into
   a token would cost the person a reconnect for the server's own gap. The key fetched for that check
   is the one that signs, so a provider that answers once and then fails cannot burn the code between

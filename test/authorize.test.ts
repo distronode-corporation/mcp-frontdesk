@@ -262,6 +262,14 @@ describe("approve", () => {
     assert.ok(!h.events.some((e) => e.type === "code.issued"), "no code was issued");
   });
 
+  it("misuse still throws: params that are not an object are a TypeError, not an `unavailable` answer", async () => {
+    const h = await harness();
+    for (const params of [undefined, null, "response_type=code"]) {
+      await assert.rejects(h.fd.approve({ params: params as never, subject: "u" }), TypeError, String(params));
+    }
+    assert.equal(h.reports.length, 0, "nothing reported: misuse is not a fault");
+  });
+
   it("hands out nothing when the code store write fails (safety property 3)", async () => {
     const h = await harness({
       codeStore: { put: () => Promise.reject(new Error("write failed")), take: async () => null, markReplayed: async () => null, wasReplayed: async () => false },

@@ -211,6 +211,10 @@ export function createAuthorize(ctx: Context) {
 
   async function approve(input: ApproveParams): Promise<ApproveResult> {
     if (typeof input.subject !== "string" || input.subject === "") throw new TypeError("approve needs a non-empty subject");
+    // Misuse is checked before the try below, so it throws instead of reading as a failing hook.
+    if (typeof input.params !== "object" || input.params === null) {
+      throw new TypeError("approve needs the authorization request's params (URLSearchParams or an object)");
+    }
     // A hook that throws (the clock, a key provider, a store) fails closed, as at the token
     // endpoint: reported, and no code. Misuse of approve itself still throws TypeError.
     let checked: AuthorizeCheck;
