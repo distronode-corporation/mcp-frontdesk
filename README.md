@@ -233,17 +233,18 @@ Each one is pinned by tests in `test/`.
    malformed to ever match, no signing key) leaves the code where it was. A spent code presented
    again is answered with the same `invalid_grant`, and revokes the family its first redemption
    started (RFC 6749 section 4.1.2), even when that replay lands while the first redemption is
-   still in flight. A refresh that names a scope the grant never had gets `invalid_scope`, but only
-   once the refresh token has passed every check, so a dead token gets `invalid_grant` whatever
-   scope it names.
+   still in flight. A refresh that names a resource scope the grant never had gets `invalid_scope`,
+   but only once the refresh token has passed every check, so a dead token gets `invalid_grant`
+   whatever resource scope it names. A scope this server does not define at all is `invalid_scope`
+   before the token is looked up, which says nothing about the token.
 4. **Refresh tokens rotate on every use.** By default, a rotated token presented again revokes its
    whole family, the successor included: reuse is indistinguishable from theft. That has a cost: a
    client that lost a refresh response and retries with the old token signs its person out. With
-   `refreshTokenReuse: "refuse"`, only the reused token is refused and the successor keeps working;
-   a thief who refreshes first then keeps refreshing for at most `maxFamilyLifetimeSeconds` (30
-   days by default) from the first sign-in, plus the lifetime of the last access token minted, and
-   less if the family is revoked, a later reuse is detected, or no one refreshes it for
-   `ttl.refreshToken`. The current token of a family, presented by a
+   `refreshTokenReuse: "refuse"`, only the reused token is refused and the successor keeps working.
+   A thief who refreshes first can then keep refreshing until `maxFamilyLifetimeSeconds` (30 days
+   by default) after the first sign-in, unless the family is revoked before that or goes
+   `ttl.refreshToken` without a refresh; the last access token minted then works for up to
+   `ttl.accessToken` more. The current token of a family, presented by a
    different client, revokes the family in both modes. See [SECURITY-MODEL.md](SECURITY-MODEL.md).
 5. **No email in access tokens by default.** A token carries `sub`, `client_id`, `scope` and the
    registered claims. Add anything else with `accessTokenClaims`.

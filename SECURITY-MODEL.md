@@ -71,9 +71,11 @@ legitimate client lost the response to its last refresh and retried.
 - `"revoke-family"` (the default) treats every reuse as theft. The attacker's copy and the client's
   current token both die, and the person reconnects. A flaky network can sign someone out.
 - `"refuse"` refuses only the reused token. A retried refresh costs nothing, but an attacker who
-  refreshes before the client does keeps a live token, and the client is the one refused. That
-  token still dies at the family's absolute lifetime (`maxFamilyLifetimeSeconds` from the first
-  sign-in), or sooner on a revocation, a later reuse, or `ttl.refreshToken` without a refresh.
+  refreshes before the client does keeps a live token, and the client is the one refused. The
+  client's later attempts are reuse, which this mode only refuses, so the thief can keep refreshing
+  until the family's absolute lifetime (`maxFamilyLifetimeSeconds` from the first sign-in), unless
+  the family is revoked before that or goes `ttl.refreshToken` without a refresh. The last access
+  token minted works for up to `ttl.accessToken` after that.
 
 Choose `"refuse"` only if your clients retry refreshes and you accept that. In both modes, the
 current refresh token of a family (the newest, not yet replaced by a refresh), presented by a client

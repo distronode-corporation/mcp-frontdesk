@@ -47,8 +47,9 @@ before 0.1.0.
   and no row's expiry runs past it. `GrantRecord` and `NewGrant` gain a required `familyCreatedAt`,
   the same on every row of a family: a custom `GrantStore` must persist it, and the contract suite
   checks it.
-- A refresh request whose `scope` names a scope the grant does not hold is refused with
+- A refresh request whose `scope` names a resource scope the grant does not hold is refused with
   `invalid_scope` (RFC 6749 section 6), decided only after the refresh token passed every check.
-  It used to be ignored. The grant's scopes, or fewer, still work, and are not narrowed.
+  It used to be ignored. A scope the server does not define at all is still `invalid_scope` before
+  the token is looked up, as before. The grant's scopes, or fewer, still work, and are not narrowed.
 - The SSRF guard also refuses 192.88.99.0/24 (the deprecated 6to4 relay anycast block) and
   2001:10::/28 (ORCHIDv1).
