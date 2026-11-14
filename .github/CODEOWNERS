@@ -3,4 +3,4 @@
 # CODEOWNERS only has teeth behind a ruleset with "Require review from Code Owners"
 # turned on; on its own it is a request, not a gate. A handle here without write access
 # to the repository is silently ignored by GitHub, so check access before adding one.
-* @seandean
+* @distronode-corporation/approvers
