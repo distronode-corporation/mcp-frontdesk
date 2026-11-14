@@ -25,9 +25,11 @@ protects, what it trusts, and where its guarantees stop. The protocol details ar
 
 ## What each control guarantees
 
-- **Codes** are 256-bit random values, stored as SHA-256 hashes for 60 seconds, bound to the
-  client, the exact redirect URI, the PKCE challenge, the subject, the scopes and the context. They
-  are spent by the first token request that presents them, whatever it says next.
+- **Codes** are 256-bit random values, stored as SHA-256 hashes for 60 seconds by default, bound to
+  the client, the exact redirect URI, the PKCE challenge, the subject, the scopes, the context and
+  the time of consent. They are spent once the token endpoint takes them from the store, even if a
+  later check fails. A request refused before that (a missing field, another `resource`, a verifier
+  too malformed to ever match, no signing key) leaves the code unspent.
 - **PKCE S256 is mandatory.** `plain` is refused, and the challenge must be 43 base64url characters.
 - **Redirects are exact**, with one exception from RFC 8252: a loopback registration matches any
   port. An error is redirected only after the client and its redirect URI are verified; before that
@@ -50,8 +52,10 @@ legitimate client lost the response to its last refresh and retried.
 - `"refuse"` refuses only the reused token. A retried refresh costs nothing, but an attacker who
   refreshes before the client does keeps a live token, and the client is the one refused.
 
-Choose `"refuse"` only if your clients retry refreshes and you accept that. In both modes, a
-refresh token presented by a client other than the one it was issued to revokes the family.
+Choose `"refuse"` only if your clients retry refreshes and you accept that. In both modes, a live,
+unrotated refresh token presented by a client other than the one it was issued to revokes the
+family. A token already rotated is reuse first, so under `"refuse"` it is only refused, whoever
+presents it.
 
 ## What it does not protect
 

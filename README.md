@@ -7,7 +7,7 @@ asks: clients identify themselves with a Client ID Metadata Document, every code
 S256, and refresh tokens rotate on every use.
 
 - Framework-free: every endpoint takes a Web `Request` and returns a `Response`.
-- One runtime dependency, [`jose`](https://github.com/panva/jose). TypeScript, ESM, Node.js 22 or later.
+- One runtime dependency, [`jose`](https://github.com/panva/jose). TypeScript, ESM, Node.js 22.18 or later.
 - Your storage, behind two small interfaces. In-memory stores ship in the package, and a contract
   test suite (`mcp-frontdesk/testing`) checks yours.
 - No product defaults. You configure every URL, scope, client host and redirect URI.
@@ -152,7 +152,7 @@ unusable. Required:
 | `issuer` | The authorization server's identifier. https, canonical (http is accepted only on `localhost`, `127.0.0.1` or `[::1]`). |
 | `resource` | The MCP server's canonical URI. The audience of every token. |
 | `scopes` | The resource's scopes. `offline_access` is recognised in requests without being listed. |
-| `authorizationEndpoint`, `tokenEndpoint` | A path under the issuer's origin, or an absolute URL. |
+| `authorizationEndpoint`, `tokenEndpoint` | A path under the issuer's origin (`//host/...` is refused), or an absolute URL. |
 | `clientIdHosts` | Hosts whose Client ID Metadata Documents are accepted, exact names. |
 | `redirectUris` | Exact hosted callbacks a client document may list. |
 | `allowedOrigins` | Browser origins allowed at the token endpoint and the gate. Any other `Origin` is refused. Requests with no `Origin` are not affected. |
@@ -163,7 +163,7 @@ Optional:
 | Field | Default | Meaning |
 |---|---|---|
 | `defaultScopes` | all of `scopes` | Granted when a request names none. |
-| `resourcePaths` | the resource's path | Request paths a token may be used on. |
+| `resourcePaths` | the resource's path | Request paths a token may be used on: canonical absolute paths, no query or fragment. |
 | `resourceName` | none | `resource_name` in the resource metadata. |
 | `allowLoopbackRedirects` | `false` | Accept `http://localhost`, `127.0.0.1`, `[::1]` redirects on any port (native clients). |
 | `ttl.authorizationCode` | 60 s | Code lifetime. |
@@ -211,9 +211,9 @@ Each one is pinned by tests in `test/`.
 
 1. **The client metadata fetch goes through an SSRF guard, on by default.** An unauthenticated
    visitor chooses the client_id URL, so the fetch refuses internal names, resolves the host once,
-   refuses any private, loopback, link-local, shared or reserved address (IPv6 forms that embed one
-   included), connects only to the addresses it checked, never follows a redirect, and gives up after
-   5 seconds or 5 KB. There is no test-mode bypass: tests inject a resolver. A raw fetch is accepted
+   refuses any private, loopback, link-local, site-local, shared or reserved address (IPv6 forms that
+   embed one included), connects only to the addresses it checked, never follows a redirect, and gives
+   up after 5 seconds (one deadline for the lookup and the whole fetch) or 5 KB. There is no test-mode bypass: tests inject a resolver. A raw fetch is accepted
    only through `clientMetadata.unsafeFetchClientMetadata`, which skips the guard (the deadline, the
    cap and every document check still apply). Use it only when every allowed client host is yours.
 2. **Body caps are streaming.** The token request (8 KB) and the metadata document (5 KB) are read
@@ -222,14 +222,16 @@ Each one is pinned by tests in `test/`.
 3. **No oracle at the token endpoint.** Every refusal of a code or a refresh token is the same
    `invalid_grant`: unknown, replayed, expired, wrong client, wrong redirect, wrong verifier, inactive.
    The reason goes to your audit sink only. A code store that fails is a refusal, never a token. A
-   code is spent on the first attempt, right or wrong (only a verifier too malformed to ever match
-   is refused before the code is touched).
+   code is spent by the first well-formed request that presents it, right or wrong. A request
+   refused before the code store is asked (a missing field, another `resource`, a verifier too
+   malformed to ever match, no signing key) leaves the code where it was.
 4. **Refresh tokens rotate on every use.** By default, a rotated token presented again revokes its
    whole family, the successor included: reuse is indistinguishable from theft. That has a cost: a
    client that lost a refresh response and retries with the old token signs its person out. With
    `refreshTokenReuse: "refuse"`, only the reused token is refused and the successor keeps working;
-   a thief who refreshes first then keeps access until the family expires or is revoked. A token
-   presented by a different client always revokes the family. See [SECURITY-MODEL.md](SECURITY-MODEL.md).
+   a thief who refreshes first then keeps access until the family expires or is revoked. A live
+   (not yet rotated) token presented by a different client revokes the family in both modes. See
+   [SECURITY-MODEL.md](SECURITY-MODEL.md).
 5. **No email in access tokens by default.** A token carries `sub`, `client_id`, `scope` and the
    registered claims. Add anything else with `accessTokenClaims`.
 6. **A wrap hook for codes and refresh tokens.** A host running several deployments can decorate
@@ -241,7 +243,8 @@ Each one is pinned by tests in `test/`.
 ### What is not protected without a RateLimiter
 
 mcp-frontdesk calls `rateLimiter.allow(endpoint, request)` at the token endpoint (`"token"`) and the
-gate (`"resource"`). With no `rateLimiter`, nothing limits:
+gate (`"resource"`). A limiter that throws fails closed: it is reported, and the request is refused
+(503 at the gate, 500 at the token endpoint). With no `rateLimiter`, nothing limits:
 
 | Surface | What a flood costs you |
 |---|---|
@@ -256,7 +259,8 @@ gate (`"resource"`). With no `rateLimiter`, nothing limits:
 mcp-frontdesk for OAuth and the bearer gate, the official MCP TypeScript SDK
 (`@modelcontextprotocol/server`) for the protocol, a plain-HTML consent page behind a demo sign-in
 (pick an account, no password), in-memory stores, and three tools over made-up notes:
-`list_notes`, `read_note`, and `add_note`, which needs the `notes:write` scope. It listens on
+`list_notes` and `read_note`, which need the `notes:read` scope, and `add_note`, which needs
+`notes:write`. It listens on
 `127.0.0.1` over http, which mcp-frontdesk accepts for a loopback issuer and resource, and refuses
 any other `Host` header. It is not part of the published package.
 

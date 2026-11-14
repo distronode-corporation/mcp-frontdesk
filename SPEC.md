@@ -57,9 +57,10 @@ Checked in this order. The first three failures are pages (`invalid_client`, `un
    document fetched and valid.
 2. `redirect_uri` present once and registered in the document.
 3. `response_type=code` (else `unsupported_response_type`); `code_challenge_method=S256` with a
-   43-character challenge; `state` present and at most 512 characters; `resource` present (all
-   `invalid_request`); `resource` equal to the configured resource, scheme and host case-insensitive
-   (`invalid_target`); `scope`, when present, non-empty and made only of resource scopes and
+   43-character challenge a SHA-256 digest can produce (its last character one of the 16 with no
+   stray bits); `state` present and at most 512 characters; `resource` present (all
+   `invalid_request`); `resource` exactly the configured resource, scheme and host
+   case-insensitive, with no userinfo, query or fragment, not even an empty one (`invalid_target`); `scope`, when present, non-empty and made only of resource scopes and
    `offline_access` (`invalid_scope`).
 
 Granted scopes: the resource scopes the request names, or `defaultScopes` when it names none (a
@@ -68,7 +69,7 @@ request for `offline_access` alone included). `approve` may narrow them, never w
 ## Client metadata document
 
 - Fetched with `Accept: application/json`; 200 only; `application/json` or `application/*+json`; at
-  most 5 KB; 5 seconds for the whole fetch.
+  most 5 KB; 5 seconds for the whole fetch, the DNS lookup included.
 - Must be a JSON object whose `client_id` equals the URL; no `client_secret` or
   `client_secret_expires_at`; `token_endpoint_auth_method` absent or `none`; a `client_name` of 1 to
   80 characters after trimming with no control characters; 1 to 10 `redirect_uris`, every one on the
@@ -93,11 +94,13 @@ request for `offline_access` alone included). `approve` may narrow them, never w
   minted and from the successor grant, and the response's `scope` lists what was granted (RFC 6749
   sections 3.3 and 6). A grant or code left with no scope: `invalid_grant`, and a grant's family is
   revoked.
-- The access token is minted after every check and before the grant store is written. A mint that
-  fails (a claims hook that throws, the key gone) is a `500` or `503` that spends no refresh token
-  and creates no grant. A code is spent before its checks, so on a failed exchange it is gone.
+- The signing key is fetched once per request, for the check above, and that key signs the access
+  token. The access token is minted after every check and before the grant store is written. A mint
+  that fails (a claims hook that throws) is a `500` that spends no refresh token and creates no
+  grant. A code is spent before its checks, so on a failed exchange it is gone.
+- The grant's `authorizedAt` is the time of consent, carried in the code, not the time of exchange.
 - Success: `access_token`, `token_type: "Bearer"`, `expires_in`, `refresh_token`, `scope`, with
-  `Cache-Control: no-store` and `Pragma: no-cache` (as on every answer).
+  `Cache-Control: no-store` and `Pragma: no-cache` (as on every answer, the CORS preflight included).
 - A rate-limited request gets 429 with `Retry-After: 60` and `{"error":"slow_down"}`.
 - An internal fault is `500 server_error`, reported.
 
@@ -110,8 +113,9 @@ lifetime and an `iat` in the future, and refuses any scope the resource does not
 
 ## Gate
 
-In order: an `Origin` not allowed is 403 `forbidden_origin`; a rate-limited request is 429; no
-`Authorization` header is 401 `Bearer resource_metadata="<url>"`; a malformed header, a request
+In order: an `Origin` not allowed is 403 `forbidden_origin`; a rate-limited request is 429, and a
+rate limiter that throws is reported and answered 503 `temporarily_unavailable`; no
+`Authorization` header is 401 `Bearer resource_metadata="<url>"`; an empty or malformed header, a request
 path not in `resourcePaths`, or a token that does not verify is 401 with `error="invalid_token"`; a
 token missing a required scope is 403 with `error="insufficient_scope"` and `scope="<all required>"`.
 

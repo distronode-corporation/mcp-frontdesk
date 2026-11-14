@@ -9,8 +9,10 @@ What was decided while building v0.1.0, and why.
 - **The host owns sign-in and consent.** An authorization server that also shipped a login page
   would own the hardest part to get right for each product. `checkAuthorizeRequest` and `approve`
   are the seam: the host checks, asks, then calls `approve`, which checks everything again.
-- **One config object, no product defaults.** Only the lifetimes have defaults. Claude's hosts are a
-  named preset (`claudeClients`), applied only when spread in.
+- **One config object, no product defaults.** What has a default is either derived from the host's
+  own values (`defaultScopes` is all of `scopes`, `resourcePaths` is the resource's path) or a
+  security parameter (the lifetimes, `refreshTokenReuse: "revoke-family"`, `allowLoopbackRedirects:
+  false`). Claude's hosts are a named preset (`claudeClients`), applied only when spread in.
 
 ## Dependencies
 
@@ -19,7 +21,9 @@ What was decided while building v0.1.0, and why.
   package's largest dependency.
 - **Development: `typescript` and `@types/node` only.** Tests use `node:test` and Node's built-in
   coverage, and run the TypeScript sources directly (Node 22.18 or later strips types). The published
-  package is compiled JavaScript with declarations, so users need only Node 22.
+  package is compiled JavaScript with declarations, but `engines` still says `>=22.18`: that is the
+  oldest Node the CI runs the package on, and a range that names versions no test ever ran would be
+  a claim nobody checked.
 
 ## The client metadata fetch
 
@@ -53,11 +57,13 @@ What was decided while building v0.1.0, and why.
   a scope that comes back later needs a new consent. A grant left with no scope can never mint
   again, so it is refused with `invalid_grant` and its family revoked (audit reason `no_scope`).
 - **The access token is minted before the store is written.** Every check that can fail, the mint
-  included, runs before `GrantStore.rotate` (or `insert`). A claims hook that throws, or a key that
-  goes away, then costs a retry, never the refresh token. A token minted for a rotation that loses
+  included, runs before `GrantStore.rotate` (or `insert`). A claims hook that throws then costs a
+  retry, never the refresh token. A token minted for a rotation that loses
   its race is dropped unsent.
-- **The key is checked before anything is spent.** A burnt code the server could not turn into a
-  token would cost the person a reconnect for the server's own gap.
+- **The key is checked before anything is spent, once.** A burnt code the server could not turn into
+  a token would cost the person a reconnect for the server's own gap. The key fetched for that check
+  is the one that signs, so a provider that answers once and then fails cannot burn the code between
+  the two.
 
 ## Tokens and grants
 
@@ -69,7 +75,9 @@ What was decided while building v0.1.0, and why.
 - **`isGrantActive` instead of built-in account checks.** The server this was extracted from
   re-checked tenant membership, account verification and a revocation cutoff on every refresh.
   Those are product rules, so the package asks one hook, at the code exchange and every refresh,
-  with `authorizedAt` so a cutoff can be compared.
+  with `authorizedAt` so a cutoff can be compared. `authorizedAt` is the moment of consent, carried
+  in the code (`CodeRecord.authorizedAt`), not the moment the client redeemed it: a password reset
+  between the two must still end the grant.
 - **`context` instead of a fixed tenant field.** The original bound every grant to one tenant.
   The package carries a string map from `approve` to the grant, the hooks and the claims hook.
 
