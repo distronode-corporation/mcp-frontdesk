@@ -41,7 +41,8 @@ export type AuditEvent =
       subject: string;
       clientId: string;
       familyId: string;
-      reason: "reuse" | "client_mismatch" | "inactive" | "user";
+      /** `no_scope`: every scope of the grant was removed from the config. */
+      reason: "reuse" | "client_mismatch" | "inactive" | "no_scope" | "user";
     }
   | { type: "token.refused"; grantType: "authorization_code" | "refresh_token"; reason: string };
 

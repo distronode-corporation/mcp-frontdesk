@@ -87,8 +87,15 @@ request for `offline_access` alone included). `approve` may narrow them, never w
   (`invalid_target`). Then the code is taken (spent), and the client, the exact redirect URI, the
   verifier and `isGrantActive` are checked. Any failure: `invalid_grant`.
 - `refresh_token`: `refresh_token` required; `resource` absent or equal; `scope`, when present, made
-  only of recognised scopes (`invalid_scope`, checked before rotation). The access token always
-  carries the grant's own scopes.
+  only of recognised scopes (`invalid_scope`, checked before rotation). The access token carries
+  the grant's own scopes, narrowed to the scopes configured now.
+- A scope removed from `scopes` since the grant (or the code) was made is dropped from what is
+  minted and from the successor grant, and the response's `scope` lists what was granted (RFC 6749
+  sections 3.3 and 6). A grant or code left with no scope: `invalid_grant`, and a grant's family is
+  revoked.
+- The access token is minted after every check and before the grant store is written. A mint that
+  fails (a claims hook that throws, the key gone) is a `500` or `503` that spends no refresh token
+  and creates no grant. A code is spent before its checks, so on a failed exchange it is gone.
 - Success: `access_token`, `token_type: "Bearer"`, `expires_in`, `refresh_token`, `scope`, with
   `Cache-Control: no-store` and `Pragma: no-cache` (as on every answer).
 - A rate-limited request gets 429 with `Retry-After: 60` and `{"error":"slow_down"}`.

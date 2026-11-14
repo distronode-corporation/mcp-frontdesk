@@ -43,7 +43,19 @@ What was decided while building v0.1.0, and why.
 - **A rate-limited token request answers `slow_down` with 429 and `Retry-After`.** OAuth has no
   error code for rate limiting; this keeps the behaviour of the server this was extracted from.
 - **The refresh `scope` parameter is validated, never used to narrow.** The access token carries the
-  grant's scopes. Narrowing per refresh is allowed by RFC 6749 but no MCP client was seen to use it.
+  grant's scopes (less any the config has since removed, below). Narrowing per refresh at the
+  client's request is allowed by RFC 6749 but no MCP client was seen to use it.
+- **A removed scope narrows a grant; it does not end it.** When the config drops a scope, a refresh
+  (or a code approved earlier) is answered with the scopes still configured, and the `scope` field
+  says so: RFC 6749 lets the server issue less than was asked (section 3.3), and a refresh may never
+  carry more than the original grant (section 6). Refusing would sign every connected person out for
+  a config change that did not concern most of them. The successor grant keeps the narrowed set, so
+  a scope that comes back later needs a new consent. A grant left with no scope can never mint
+  again, so it is refused with `invalid_grant` and its family revoked (audit reason `no_scope`).
+- **The access token is minted before the store is written.** Every check that can fail, the mint
+  included, runs before `GrantStore.rotate` (or `insert`). A claims hook that throws, or a key that
+  goes away, then costs a retry, never the refresh token. A token minted for a rotation that loses
+  its race is dropped unsent.
 - **The key is checked before anything is spent.** A burnt code the server could not turn into a
   token would cost the person a reconnect for the server's own gap.
 

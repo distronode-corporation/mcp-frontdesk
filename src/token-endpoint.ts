@@ -20,7 +20,7 @@ import { sameResource } from "./authorize.ts";
 import type { GrantInfo } from "./config.ts";
 import type { Context } from "./context.ts";
 import { sha256Hex } from "./encoding.ts";
-import { createGrant, grantIsActive, rotateGrant } from "./grants.ts";
+import { createGrant, grantIsActive, liveScopes, rotateGrant } from "./grants.ts";
 import { deriveCodeChallenge, isValidCodeVerifier } from "./pkce.ts";
 import { readCapped } from "./read-capped.ts";
 import type { CodeRecord } from "./stores.ts";
@@ -76,9 +76,16 @@ export function createTokenEndpoint(ctx: Context) {
 
   const resourceOk = (form: Map<string, string>) => !form.has("resource") || sameResource(form.get("resource")!, config.resource);
 
-  async function tokenResponse(request: Request, info: GrantInfo, refreshToken: string): Promise<Response> {
+  /**
+   * The access token for `info`. Called by createGrant and rotateGrant before
+   * they write to the store, so a throw here (a claims hook, the key) spends nothing.
+   */
+  async function mint(info: GrantInfo): Promise<string> {
     const extra = hooks.accessTokenClaims ? await hooks.accessTokenClaims(info) : {};
-    const accessToken = await mintAccessToken(config, hooks.keys, info, extra);
+    return mintAccessToken(config, hooks.keys, info, extra);
+  }
+
+  function tokenResponse(request: Request, info: GrantInfo, accessToken: string, refreshToken: string): Response {
     return json(request, {
       access_token: accessToken,
       token_type: "Bearer",
@@ -119,19 +126,22 @@ export function createTokenEndpoint(ctx: Context) {
     if (record.redirectUri !== redirectUri) return refused(request, "authorization_code", "redirect_mismatch");
     if (deriveCodeChallenge(verifier) !== record.codeChallenge) return refused(request, "authorization_code", "pkce_mismatch");
 
+    // A scope removed from the config since the approval is dropped (the response's `scope` says so).
+    const scopes = liveScopes(ctx, record.scopes);
+    if (scopes.length === 0) return refused(request, "authorization_code", "no_scope");
     const authorizedAt = new Date(config.now());
     const pending: GrantInfo = {
       subject: record.subject,
       clientId,
-      scopes: [...record.scopes],
+      scopes,
       context: { ...record.context },
       familyId: null,
       authorizedAt,
     };
     if (!(await grantIsActive(ctx, pending))) return refused(request, "authorization_code", "inactive");
 
-    const grant = await createGrant(ctx, { subject: record.subject, clientId, scopes: record.scopes, context: record.context });
-    return tokenResponse(request, grant.info, grant.refreshToken);
+    const grant = await createGrant(ctx, { subject: record.subject, clientId, scopes, context: record.context }, mint);
+    return tokenResponse(request, grant.info, grant.issued, grant.refreshToken);
   }
 
   async function refreshToken(request: Request, form: Map<string, string>, clientId: string): Promise<Response> {
@@ -148,9 +158,9 @@ export function createTokenEndpoint(ctx: Context) {
         return error(request, "invalid_scope");
       }
     }
-    const rotated = await rotateGrant(ctx, presented, clientId);
+    const rotated = await rotateGrant(ctx, presented, clientId, mint);
     if (!rotated.ok) return refused(request, "refresh_token", rotated.reason);
-    return tokenResponse(request, rotated.grant.info, rotated.grant.refreshToken);
+    return tokenResponse(request, rotated.grant.info, rotated.grant.issued, rotated.grant.refreshToken);
   }
 
   return async function handleToken(request: Request): Promise<Response> {

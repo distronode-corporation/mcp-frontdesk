@@ -16,6 +16,14 @@
  *   - A refresh token is bound to its client: presented by another client_id,
  *     the family is revoked whatever the reuse policy.
  *   - `isGrantActive` is asked before every rotation; false revokes the family.
+ *   - The grant's scopes are narrowed to the resource's configured scopes
+ *     before anything is minted (a scope removed from the config is dropped
+ *     from the successor, and never comes back without a new consent). A grant
+ *     left with no scope revokes the family.
+ *   - The access token is minted BEFORE the store is written: the caller's
+ *     `issue` runs after every check and before the rotation (or the insert),
+ *     so a mint that fails leaves the presented refresh token usable. A token
+ *     minted for a rotation that then loses its race is never handed out.
  *
  * Every refusal has a reason for the audit sink; the token endpoint answers
  * each one with the same `invalid_grant`.
@@ -25,11 +33,16 @@ import type { Context } from "./context.ts";
 import { randomToken, sha256Hex } from "./encoding.ts";
 import type { GrantContext, GrantRecord, NewGrant } from "./stores.ts";
 
-export interface IssuedGrant {
+export interface IssuedGrant<T> {
   /** The only time the plaintext exists. */
   refreshToken: string;
   info: GrantInfo;
+  /** What `issue` returned for this grant (the access token). */
+  issued: T;
 }
+
+/** Mints what goes out with the grant. Throwing aborts before the store is written. */
+export type Issue<T> = (info: GrantInfo) => Promise<T>;
 
 export type RotateFailure =
   | "unknown"
@@ -38,9 +51,15 @@ export type RotateFailure =
   | "revoked"
   | "expired"
   | "client_mismatch"
-  | "inactive";
+  | "inactive"
+  | "no_scope";
 
-export type RotateResult = { ok: true; grant: IssuedGrant } | { ok: false; reason: RotateFailure };
+export type RotateResult<T> = { ok: true; grant: IssuedGrant<T> } | { ok: false; reason: RotateFailure };
+
+/** The scopes of `scopes` the resource still defines, in their original order. */
+export function liveScopes(ctx: Context, scopes: readonly string[]): string[] {
+  return scopes.filter((scope) => ctx.config.scopes.includes(scope));
+}
 
 export function infoOf(row: Pick<GrantRecord, "subject" | "clientId" | "scopes" | "context" | "familyId" | "authorizedAt">): GrantInfo {
   return {
@@ -90,21 +109,32 @@ function newRow(
   };
 }
 
-/** Start a family, after a code was spent. */
-export async function createGrant(
+/**
+ * Start a family, after a code was spent. `params.scopes` must already be
+ * live (`liveScopes`) and non-empty. `issue` runs before the insert, so a mint
+ * that fails leaves no grant behind.
+ */
+export async function createGrant<T>(
   ctx: Context,
   params: { subject: string; clientId: string; scopes: readonly string[]; context: GrantContext },
-): Promise<IssuedGrant> {
+  issue: Issue<T>,
+): Promise<IssuedGrant<T>> {
   const now = new Date(ctx.config.now());
   const { handed, tokenHash } = freshToken(ctx);
   const row = newRow(ctx, { ...params, familyId: crypto.randomUUID(), authorizedAt: now }, tokenHash, now);
+  const info = infoOf(row);
+  const issued = await issue(info);
   await ctx.hooks.grantStore.insert(row);
   await ctx.audit({ type: "grant.created", subject: row.subject, clientId: row.clientId, familyId: row.familyId, scopes: row.scopes });
-  return { refreshToken: handed, info: infoOf(row) };
+  return { refreshToken: handed, info, issued };
 }
 
-/** Exchange a refresh token for its successor, or refuse. */
-export async function rotateGrant(ctx: Context, presented: string, clientId: string): Promise<RotateResult> {
+/**
+ * Exchange a refresh token for its successor, or refuse. `issue` runs after
+ * every check and before the rotation is written: if it throws, nothing is
+ * spent and the presented token still works.
+ */
+export async function rotateGrant<T>(ctx: Context, presented: string, clientId: string, issue: Issue<T>): Promise<RotateResult<T>> {
   const store = ctx.hooks.grantStore;
   const bare = ctx.hooks.tokenWrapper ? ctx.hooks.tokenWrapper.unwrap("refresh_token", presented) : presented;
   if (bare === null) return { ok: false, reason: "unknown" };
@@ -113,7 +143,7 @@ export async function rotateGrant(ctx: Context, presented: string, clientId: str
   const now = new Date(ctx.config.now());
 
   const kill = async (
-    reason: "reused" | "reused_concurrently" | "client_mismatch" | "inactive",
+    reason: "reused" | "reused_concurrently" | "client_mismatch" | "inactive" | "no_scope",
   ): Promise<{ ok: false; reason: RotateFailure }> => {
     await store.revokeFamily(row.familyId, now);
     await ctx.audit({
@@ -121,7 +151,7 @@ export async function rotateGrant(ctx: Context, presented: string, clientId: str
       subject: row.subject,
       clientId: row.clientId,
       familyId: row.familyId,
-      reason: reason === "client_mismatch" || reason === "inactive" ? reason : "reuse",
+      reason: reason === "reused" || reason === "reused_concurrently" ? "reuse" : reason,
     });
     return { ok: false, reason };
   };
@@ -133,9 +163,15 @@ export async function rotateGrant(ctx: Context, presented: string, clientId: str
   if (row.expiresAt.getTime() <= now.getTime()) return { ok: false, reason: "expired" };
   if (row.clientId !== clientId) return kill("client_mismatch");
   if (!(await grantIsActive(ctx, infoOf(row)))) return kill("inactive");
+  // A grant whose every scope was removed from the config can never mint again.
+  const scopes = liveScopes(ctx, row.scopes);
+  if (scopes.length === 0) return kill("no_scope");
 
   const { handed, tokenHash } = freshToken(ctx);
-  const successor = newRow(ctx, row, tokenHash, now);
+  const successor = newRow(ctx, { ...row, scopes }, tokenHash, now);
+  const info = infoOf(successor);
+  // Before the rotation: a mint that throws spends nothing.
+  const issued = await issue(info);
   const outcome = await store.rotate(row.id, now, successor);
   if (outcome === "taken") return reuse("reused_concurrently");
   if (outcome === "revoked") {
@@ -144,5 +180,5 @@ export async function rotateGrant(ctx: Context, presented: string, clientId: str
     return { ok: false, reason: "revoked" };
   }
   await ctx.audit({ type: "grant.refreshed", subject: row.subject, clientId: row.clientId, familyId: row.familyId });
-  return { ok: true, grant: { refreshToken: handed, info: infoOf(successor) } };
+  return { ok: true, grant: { refreshToken: handed, info, issued } };
 }

@@ -8,6 +8,7 @@ import type { KeyProvider } from "../src/keys.ts";
 import type { CodeStore, GrantStore } from "../src/stores.ts";
 import {
   approveCode,
+  authorizeParams,
   CLIENT_ID,
   codeForm,
   connect,
@@ -16,6 +17,7 @@ import {
   ISSUER,
   refreshForm,
   RESOURCE,
+  resourceRequest,
   tokenRequest,
   type Harness,
   type TokenBody,
@@ -483,5 +485,104 @@ describe("hooks that fail never change an answer", () => {
     const first = await connect(h);
     assert.equal((await post(h, refreshForm(first.refresh_token))).status, 200);
     assert.equal(HOSTED_REDIRECT.length > 0, true);
+  });
+});
+
+describe("a scope removed from the config, and a mint that fails", () => {
+  /** A second instance over the same stores, key and clock: the same server restarted with a new config. */
+  async function restartedWith(h: Harness, overrides: Parameters<typeof harness>[0]) {
+    return harness({ grantStore: h.grants, codeStore: h.codes, keys: h.keys, now: h.clock.now, ...overrides });
+  }
+
+  it("a refresh narrows the grant to the scopes still configured, and says so in `scope`", async () => {
+    const h = await harness();
+    const first = await connect(h, { params: authorizeParams({ scope: "notes:read notes:write" }) });
+    assert.equal(first.scope, "notes:read notes:write");
+
+    const s = await restartedWith(h, { scopes: ["notes:read"] });
+    const second = await post(s, refreshForm(first.refresh_token));
+    assert.equal(second.status, 200);
+    assert.equal(second.body.scope, "notes:read");
+    assert.equal(decodeJwt(second.body.access_token).scope, "notes:read");
+    assert.ok(await s.fd.authenticate(resourceRequest(second.body.access_token)).then((r) => r.ok));
+    // The successor is narrowed for good: the removed scope does not come back without a new consent.
+    assert.deepEqual((await s.fd.listGrants("user-1"))[0]?.scopes, ["notes:read"]);
+    const third = await post(h, refreshForm(second.body.refresh_token));
+    assert.equal(third.body.scope, "notes:read");
+  });
+
+  it("a refresh of a grant whose every scope was removed is refused and revokes the family, before any rotation", async () => {
+    const h = await harness();
+    const first = await connect(h);
+    assert.equal(first.scope, "notes:read");
+
+    const s = await restartedWith(h, { scopes: ["notes:write"], defaultScopes: ["notes:write"] });
+    assert.deepEqual(slim(await post(s, refreshForm(first.refresh_token))), INVALID_GRANT);
+    assert.ok(s.events.some((e) => e.type === "token.refused" && e.reason === "no_scope"));
+    assert.ok(s.events.some((e) => e.type === "grant.revoked" && e.reason === "no_scope"));
+    assert.deepEqual(await h.fd.listGrants("user-1"), []);
+    assert.equal(s.reports.length, 0, "a refusal, not a crash");
+  });
+
+  it("a code approved before a scope was removed is exchanged for the scopes still configured", async () => {
+    const h = await harness();
+    const both = await approveCode(h, {}, authorizeParams({ scope: "notes:read notes:write" }));
+    const only = await approveCode(h, {}, authorizeParams({ scope: "notes:write" }));
+
+    const s = await restartedWith(h, { scopes: ["notes:read"], defaultScopes: ["notes:read"] });
+    const narrowed = await post(s, codeForm(both));
+    assert.equal(narrowed.status, 200);
+    assert.equal(narrowed.body.scope, "notes:read");
+
+    assert.deepEqual(slim(await post(s, codeForm(only))), INVALID_GRANT);
+    assert.ok(s.events.some((e) => e.type === "token.refused" && e.reason === "no_scope"));
+    assert.equal((await s.fd.listGrants("user-1")).length, 1, "no grant for the refused code");
+  });
+
+  it("a mint that fails during a refresh leaves the presented refresh token usable", async () => {
+    let failing: "throw" | "registered" | "no-key-at-mint" | null = null;
+    let keyCalls = 0;
+    const real = (await harness()).keys;
+    // The endpoint asks for the key once before anything is spent (call 1); the mint asks again (call 2).
+    const keys: KeyProvider = {
+      signingKey: async () => (++keyCalls === 2 && failing === "no-key-at-mint" ? null : real.signingKey()),
+      verificationKey: (kid) => real.verificationKey(kid),
+    };
+    const h = await harness({
+      keys,
+      accessTokenClaims: () => {
+        if (failing === "throw") throw new Error("claims backend down");
+        return failing === "registered" ? { sub: "someone-else" } : {};
+      },
+    });
+    const first = await connect(h);
+    const refresh = async (mode: typeof failing) => {
+      failing = mode;
+      keyCalls = 0;
+      return slim(await post(h, refreshForm(first.refresh_token)));
+    };
+
+    assert.deepEqual(await refresh("throw"), { status: 500, body: { error: "server_error" } });
+    assert.deepEqual(await refresh("registered"), { status: 500, body: { error: "server_error" } });
+    assert.deepEqual(await refresh("no-key-at-mint"), { status: 503, body: { error: "temporarily_unavailable" } });
+
+    // Nothing was spent: the same token refreshes, and the family is intact.
+    const after = await refresh(null);
+    assert.equal(after.status, 200);
+    assert.equal((await h.fd.listGrants("user-1")).length, 1);
+    assert.ok(!h.events.some((e) => e.type === "grant.revoked"));
+    assert.equal(h.events.filter((e) => e.type === "grant.refreshed").length, 1);
+  });
+
+  it("a mint that fails during a code exchange stores no grant", async () => {
+    const h = await harness({
+      accessTokenClaims: () => {
+        throw new Error("claims backend down");
+      },
+    });
+    const code = await approveCode(h);
+    assert.deepEqual(slim(await post(h, codeForm(code))), { status: 500, body: { error: "server_error" } });
+    assert.deepEqual(await h.fd.listGrants("user-1"), []);
+    assert.ok(!h.events.some((e) => e.type === "grant.created"));
   });
 });
