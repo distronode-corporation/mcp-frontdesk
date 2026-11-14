@@ -1,0 +1,158 @@
+name: Release
+
+# Fires on a `vX.Y.Z` tag. `guard` refuses a tag that should not be released, `test` runs the
+# whole CI gate on the tagged commit, `release` creates the GitHub Release from the matching
+# CHANGELOG.md section, and `npm` (off until vars.NPM_PUBLISH is 'true') publishes the package.
+#
+# npm uses trusted publishing: the registry's trusted publisher for mcp-frontdesk names this
+# repository and this file, release.yml, with no environment, and npm exchanges the `npm` job's
+# OIDC token for a one-time publish token and adds the provenance attestation itself. No npm
+# token is stored anywhere. Renaming this file or adding an environment breaks that trust until
+# the publisher on npm is changed to match.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+# Never cancel a release in flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The ancestry check below needs history: a shallow clone has no merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # CI runs on main and on pull requests, not on tags, so a tag on a commit that never
+      # reached main would be released without CI having run on it.
+      - name: The tagged commit is on main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not an ancestor of origin/main."
+            exit 1
+          fi
+
+      - name: The version agrees with the tag
+        id: version
+        run: |
+          set -euo pipefail
+          want="${GITHUB_REF_NAME#v}"
+          for file in package.json package-lock.json; do
+            have="$(node -p "require('./$file').version")"
+            if [ "$have" != "$want" ]; then
+              echo "::error::$file is $have, the tag is $want."
+              exit 1
+            fi
+          done
+          if ! grep -q "^## \[$want\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $want."
+            exit 1
+          fi
+          echo "version=$want" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml # zizmor: ignore[self-repository]
+
+  release:
+    needs: [guard, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # Creating the GitHub Release.
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The matching CHANGELOG.md section is the release body, so the two cannot drift.
+      - name: Create the release
+        run: |
+          set -euo pipefail
+          awk -v tag="## [${VERSION}]" '
+            index($0, tag)==1 {cap=1; next}
+            index($0, "## [")==1 && cap==1 {cap=0}
+            cap {print}
+          ' CHANGELOG.md > release-notes.md
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file release-notes.md
+
+  npm:
+    needs: [guard, release]
+    if: vars.NPM_PUBLISH == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The OIDC token npm exchanges for the publish, and signs the provenance with.
+      id-token: write
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # registry-url as npm's trusted publishing guide has it. No cache in a release.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # Older npm has no trusted publishing and would fail with an authentication error.
+      - name: npm supports trusted publishing
+        run: |
+          set -euo pipefail
+          have="$(npm --version)"
+          echo "npm $have"
+          if [ "$(printf '%s\n' 11.5.1 "$have" | sort -V | head -n 1)" != "11.5.1" ]; then
+            echo "::error::npm $have predates trusted publishing (11.5.1)."
+            exit 1
+          fi
+
+      # Asked without credentials: 404 means not published, 200 means it is.
+      - name: The version is not on npm yet
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/mcp-frontdesk/$VERSION")"
+          case "$status" in
+            404) echo "mcp-frontdesk@$VERSION is not on npm yet" ;;
+            200) echo "::error::mcp-frontdesk@$VERSION is already on npm. Refusing to publish it again."; exit 1 ;;
+            *) echo "::error::the npm registry answered $status for mcp-frontdesk@$VERSION"; exit 1 ;;
+          esac
+
+      - run: npm ci
+      # prepack builds dist/ from the tagged sources.
+      - name: Publish to npm
+        run: |
+          set -euo pipefail
+          npm pack --dry-run
+          npm publish --provenance --access public

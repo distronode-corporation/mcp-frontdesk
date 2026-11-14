@@ -1,0 +1,23 @@
+name: Audit
+
+# The supply-chain checks (supply-chain.yml), weekly. An advisory is published against code
+# that did not change, so a scan that runs only on a push never sees it. Dependency review
+# needs a pull request and is skipped here.
+#
+# Alerting is the run status: a failed scheduled run sends GitHub's own failure email to
+# the repository's maintainers. Nothing here opens an issue or posts anywhere.
+#
+# GitHub disables a scheduled workflow in a public repository after 60 days without
+# activity. On a dormant repository, re-enable it from the Actions tab.
+on:
+  schedule:
+    # Weekly, Monday, away from codeql.yml (Monday 04:27) and scorecard.yml (Tuesday 05:41).
+    - cron: '47 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    uses: ./.github/workflows/supply-chain.yml # zizmor: ignore[self-repository]

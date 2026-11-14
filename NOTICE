@@ -1,0 +1,9 @@
+mcp-frontdesk
+Copyright 2026 Distronode Corporation
+
+This product includes software developed by Distronode Corporation, licensed
+under the Apache License, Version 2.0. The full licence text is in LICENSE.
+
+mcp-frontdesk is original work, not a fork, and no third-party source code is
+vendored into this repository. Its one runtime dependency, jose, is installed
+from npm under its own MIT licence.
