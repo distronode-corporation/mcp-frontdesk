@@ -5,6 +5,7 @@ import { createFrontdeskWith } from "../src/frontdesk.ts";
 import type { AuditEvent, FrontdeskConfig } from "../src/config.ts";
 import { generateSigningJwk, keyProviderFromJwk, type KeyProvider } from "../src/keys.ts";
 import { MemoryCodeStore, MemoryGrantStore } from "../src/memory-stores.ts";
+import type { CodeStore, GrantStore } from "../src/stores.ts";
 import { deriveCodeChallenge } from "../src/pkce.ts";
 import type { Transport } from "../src/pinned-get.ts";
 
@@ -42,32 +43,38 @@ export function testJwk(): Promise<Record<string, unknown>> {
   return sharedKey;
 }
 
+/** A JSON response. `init.headers` in any form ResponseInit takes; a Content-Type there wins. */
 export function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init.headers as Record<string, string> | undefined) },
-  });
+  const headers = new Headers(init.headers);
+  if (!headers.has("content-type")) headers.set("Content-Type", "application/json");
+  return new Response(JSON.stringify(body), { status: 200, ...init, headers });
 }
 
+/**
+ * What a test drives. `codes`, `grants` and `keys` are the ones `fd` actually
+ * uses (an override's, when one was passed), and `clock` is its clock.
+ */
 export interface Harness {
   fd: ReturnType<typeof createFrontdeskWith>;
   clock: ReturnType<typeof clock>;
-  codes: MemoryCodeStore;
-  grants: MemoryGrantStore;
+  codes: CodeStore;
+  grants: GrantStore;
   keys: KeyProvider;
   events: AuditEvent[];
   reports: { where: string; err: unknown }[];
   fetches: string[];
 }
 
+/**
+ * A Frontdesk over in-memory stores and a hand-moved clock. Override any
+ * config field but `now`: pass another harness's `clock` in `options` to
+ * share one, so `h.clock` is always the clock `fd` reads.
+ */
 export async function harness(
-  overrides: Partial<FrontdeskConfig> = {},
-  options: { document?: unknown; transport?: Transport } = {},
+  overrides: Partial<Omit<FrontdeskConfig, "now">> = {},
+  options: { document?: unknown; transport?: Transport; clock?: ReturnType<typeof clock> } = {},
 ): Promise<Harness> {
-  const time = clock();
-  const codes = new MemoryCodeStore({ now: time.now });
-  const grants = new MemoryGrantStore();
+  const time = options.clock ?? clock();
   const keys = await keyProviderFromJwk(await testJwk());
   const events: AuditEvent[] = [];
   const reports: { where: string; err: unknown }[] = [];
@@ -85,8 +92,8 @@ export async function harness(
     allowLoopbackRedirects: true,
     allowedOrigins: ["https://app.example.com"],
     keys,
-    codeStore: codes,
-    grantStore: grants,
+    codeStore: new MemoryCodeStore({ now: time.now }),
+    grantStore: new MemoryGrantStore(),
     reporter: { error: (where, err) => reports.push({ where, err }) },
     audit: { record: (event) => void events.push(event) },
     clientMetadata: {
@@ -95,11 +102,11 @@ export async function harness(
         return jsonResponse(document);
       },
     },
-    now: time.now,
     ...overrides,
+    now: time.now,
   };
   const fd = createFrontdeskWith(config, options.transport ? { transport: options.transport } : {});
-  return { fd, clock: time, codes, grants, keys, events, reports, fetches };
+  return { fd, clock: time, codes: config.codeStore, grants: config.grantStore, keys: config.keys, events, reports, fetches };
 }
 
 export function authorizeParams(overrides: Record<string, string | undefined> = {}): Record<string, string> {

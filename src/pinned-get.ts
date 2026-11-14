@@ -6,7 +6,9 @@
  *     verifies the certificate against the host name (SNI and Host are the name).
  *   - Redirects are never followed: `https.request` does not follow them, and
  *     any status other than 200 is a refusal.
- *   - One deadline covers connect, headers and body.
+ *   - The caller's deadline (an AbortSignal) covers connect, headers and body:
+ *     when it fires, the request is destroyed, and an already-fired one starts
+ *     nothing.
  *   - The body is capped while streaming: a declared length over the cap is
  *     refused before reading, and the socket is destroyed at the first chunk
  *     that crosses it.
@@ -19,7 +21,8 @@ import type { LookupFunction } from "node:net";
 import type { ResolvedAddress } from "./ssrf.ts";
 
 export interface PinnedGetLimits {
-  timeoutMs: number;
+  /** The deadline. Aborting it ends the request as `unreachable`. */
+  signal: AbortSignal;
   maxBytes: number;
 }
 
@@ -63,16 +66,18 @@ export function pinnedGet(
   transport: Transport = httpsTransport,
 ): Promise<PinnedGetResult> {
   return new Promise((resolve) => {
+    if (limits.signal.aborted) return resolve({ ok: false, reason: "unreachable" });
     let settled = false;
     let req: ClientRequest | undefined;
+    const onAbort = () => finish({ ok: false, reason: "unreachable" });
     const finish = (result: PinnedGetResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      limits.signal.removeEventListener("abort", onAbort);
       req?.destroy();
       resolve(result);
     };
-    const timer = setTimeout(() => finish({ ok: false, reason: "unreachable" }), limits.timeoutMs);
+    limits.signal.addEventListener("abort", onAbort, { once: true });
 
     req = transport.request(
       {

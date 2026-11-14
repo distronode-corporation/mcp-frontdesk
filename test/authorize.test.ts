@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { sameResource } from "../src/authorize.ts";
 import { sha256Hex } from "../src/encoding.ts";
 import type { KeyProvider } from "../src/keys.ts";
+import type { CodeStore } from "../src/stores.ts";
 import {
   authorizeParams,
   CHALLENGE,
@@ -60,7 +61,22 @@ describe("checkAuthorizeRequest", () => {
   it("accepts a resource parameter with an upper-case scheme or host, or a trailing slash at the root", async () => {
     assert.equal(sameResource("HTTPS://MCP.EXAMPLE.COM/mcp", RESOURCE), true);
     assert.equal(sameResource("https://mcp.example.com/", "https://mcp.example.com"), true);
-    for (const bad of ["https://mcp.example.com/MCP", "https://mcp.example.com/mcp/", "https://mcp.example.com/mcp?x=1", "https://mcp.example.com/mcp#", "nope"]) {
+    for (const bad of [
+      "https://mcp.example.com/MCP",
+      "https://mcp.example.com/mcp/",
+      "https://mcp.example.com/mcp?x=1",
+      "https://mcp.example.com/mcp?",
+      "https://mcp.example.com/mcp#",
+      "https://u@mcp.example.com/mcp",
+      "https://u:p@mcp.example.com/mcp",
+      "https://:p@mcp.example.com/mcp",
+      "https://@mcp.example.com/mcp",
+      "https://mcp.example.com:443/mcp",
+      "https:\\\\mcp.example.com\\mcp",
+      " https://mcp.example.com/mcp",
+      "https://mcp.example.com/./mcp",
+      "nope",
+    ]) {
       assert.equal(sameResource(bad, RESOURCE), false, bad);
     }
   });
@@ -156,6 +172,7 @@ describe("approve", () => {
       codeChallenge: CHALLENGE,
       scopes: ["notes:read", "notes:write"],
       context: { tenant: "t-1" },
+      authorizedAt: h.clock.now(),
       expiresAt: h.clock.now() + 60_000,
     });
     assert.equal(await h.codes.take(code), null, "the store never holds the code itself");
@@ -173,7 +190,10 @@ describe("approve", () => {
   it("narrows to the scopes the host passes, and refuses widening, empty or malformed input", async () => {
     const h = await harness();
     const params = authorizeParams({ scope: "notes:read notes:write" });
-    assert.ok((await h.fd.approve({ params, subject: "user-1", scopes: ["notes:write"] })).ok);
+    const narrowed = await h.fd.approve({ params, subject: "user-1", scopes: ["notes:write"] });
+    assert.ok(narrowed.ok);
+    const record = await h.codes.take(sha256Hex(new URL(narrowed.redirectUrl).searchParams.get("code")!));
+    assert.deepEqual(record?.scopes, ["notes:write"]);
     await assert.rejects(h.fd.approve({ params: authorizeParams(), subject: "user-1", scopes: ["notes:write"] }), TypeError);
     await assert.rejects(h.fd.approve({ params, subject: "user-1", scopes: [] }), TypeError);
     await assert.rejects(h.fd.approve({ params, subject: "" }), TypeError);
@@ -190,13 +210,20 @@ describe("approve", () => {
   });
 
   it("mints no code when there is no signing key, or the key provider throws", async () => {
+    const puts: string[] = [];
+    const codeStore: CodeStore = {
+      put: async (hash) => void puts.push(hash),
+      take: async () => null,
+    };
     const none: KeyProvider = { signingKey: async () => null, verificationKey: async () => null };
-    const h = await harness({ keys: none });
+    const h = await harness({ keys: none, codeStore });
     assert.deepEqual(await h.fd.approve({ params: authorizeParams(), subject: "u" }), { ok: false, kind: "unavailable" });
     const throws: KeyProvider = { signingKey: () => Promise.reject(new Error("kms down")), verificationKey: async () => null };
-    const t = await harness({ keys: throws });
+    const t = await harness({ keys: throws, codeStore });
     assert.deepEqual(await t.fd.approve({ params: authorizeParams(), subject: "u" }), { ok: false, kind: "unavailable" });
     assert.equal(t.reports[0]?.where, "keys.signingKey");
+    assert.deepEqual(puts, [], "no code was stored");
+    assert.deepEqual([...h.events, ...t.events], [], "no code was issued");
   });
 
   it("hands out nothing when the code store write fails (safety property 3)", async () => {

@@ -13,8 +13,9 @@
  *   - The claim is atomic (`GrantStore.rotate`), so two concurrent refreshes of
  *     one token are the same reuse, and a refresh racing a revocation cannot
  *     leave a live successor.
- *   - A refresh token is bound to its client: presented by another client_id,
- *     the family is revoked whatever the reuse policy.
+ *   - A live refresh token is bound to its client: presented by another
+ *     client_id, the family is revoked whatever the reuse policy. A token
+ *     already rotated is reuse first, and the reuse policy decides.
  *   - `isGrantActive` is asked before every rotation; false revokes the family.
  *   - The grant's scopes are narrowed to the resource's configured scopes
  *     before anything is minted (a scope removed from the config is dropped
@@ -111,17 +112,18 @@ function newRow(
 
 /**
  * Start a family, after a code was spent. `params.scopes` must already be
- * live (`liveScopes`) and non-empty. `issue` runs before the insert, so a mint
- * that fails leaves no grant behind.
+ * live (`liveScopes`) and non-empty, and `params.authorizedAt` is when the
+ * person approved (carried in the code), not now. `issue` runs before the
+ * insert, so a mint that fails leaves no grant behind.
  */
 export async function createGrant<T>(
   ctx: Context,
-  params: { subject: string; clientId: string; scopes: readonly string[]; context: GrantContext },
+  params: { subject: string; clientId: string; scopes: readonly string[]; context: GrantContext; authorizedAt: Date },
   issue: Issue<T>,
 ): Promise<IssuedGrant<T>> {
   const now = new Date(ctx.config.now());
   const { handed, tokenHash } = freshToken(ctx);
-  const row = newRow(ctx, { ...params, familyId: crypto.randomUUID(), authorizedAt: now }, tokenHash, now);
+  const row = newRow(ctx, { ...params, familyId: crypto.randomUUID() }, tokenHash, now);
   const info = infoOf(row);
   const issued = await issue(info);
   await ctx.hooks.grantStore.insert(row);

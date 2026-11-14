@@ -10,7 +10,7 @@
  *     lookup;
  *   - the name is resolved once, through the resolver the caller supplies (the
  *     system resolver by default), and refused if ANY address is loopback,
- *     private, link-local, shared, reserved, documentation, multicast, or an
+ *     private, link-local, site-local, shared, reserved, documentation, multicast, or an
  *     IPv6 form that embeds one of those IPv4 addresses;
  *   - the fetch then connects to exactly those addresses (see pinned-get.ts),
  *     so a second lookup at connect time cannot rebind the name inward.
@@ -97,6 +97,7 @@ export function isPrivateOrReservedIpv6(raw: string): boolean {
   if (g0 === 0x2002) return embedded(g1, g2); // 6to4
   if (g0 === 0x2001 && (g1 === 0 || g1 === 0xdb8)) return true; // Teredo, documentation
   if ((g0 & 0xffc0) === 0xfe80) return true; // link-local
+  if ((g0 & 0xffc0) === 0xfec0) return true; // site-local (deprecated, still routed on some networks)
   if ((g0 & 0xfe00) === 0xfc00) return true; // unique local
   if ((g0 & 0xff00) === 0xff00) return true; // multicast
   return g0 === 0x100 && groups.slice(1, 4).every((group) => group === 0); // discard-only 100::/64

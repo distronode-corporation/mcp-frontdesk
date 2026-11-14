@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
 import { MemoryCodeStore, MemoryGrantStore } from "../src/memory-stores.ts";
-import type { CodeRecord, CodeStore, GrantStore, NewGrant } from "../src/stores.ts";
+import type { CodeRecord, CodeStore, GrantRecord, GrantStore, NewGrant } from "../src/stores.ts";
 import { codeStoreContract, grantStoreContract } from "../src/testing.ts";
 import { clock } from "./helpers.ts";
 
@@ -40,6 +40,38 @@ describe("the contract suite catches broken stores", () => {
     }
   }
 
+  /** A revokeFamily that reads the family, yields, then stamps only the rows it read. */
+  class SnapshotRevokeStore implements GrantStore {
+    readonly #rows = new Map<string, GrantRecord>();
+    async insert(grant: NewGrant) {
+      this.#rows.set(grant.id, { ...grant, rotatedAt: null, revokedAt: null });
+    }
+    async findByTokenHash(tokenHash: string) {
+      for (const row of this.#rows.values()) if (row.tokenHash === tokenHash) return { ...row };
+      return null;
+    }
+    async rotate(id: string, now: Date, successor: NewGrant) {
+      await new Promise((resolve) => setImmediate(resolve));
+      const row = this.#rows.get(id)!;
+      if ([...this.#rows.values()].some((r) => r.familyId === row.familyId && r.revokedAt)) return "revoked" as const;
+      row.rotatedAt = now;
+      this.#rows.set(successor.id, { ...successor, rotatedAt: null, revokedAt: null });
+      return "rotated" as const;
+    }
+    async revokeFamily(familyId: string, now: Date) {
+      const snapshot = [...this.#rows.values()].filter((r) => r.familyId === familyId && !r.revokedAt);
+      await new Promise((resolve) => setImmediate(resolve));
+      for (const row of snapshot) row.revokedAt = now;
+      return snapshot.length;
+    }
+    async listByUser() {
+      return [];
+    }
+    async revokeFamilyForUser() {
+      return 0;
+    }
+  }
+
   it("a non-atomic take fails the concurrency case", async () => {
     const race = codeStoreContract(() => new RacyCodeStore()).find((c) => c.name.includes("concurrent"))!;
     await assert.rejects(race.run());
@@ -49,13 +81,18 @@ describe("the contract suite catches broken stores", () => {
     const race = grantStoreContract(() => new RacyGrantStore()).find((c) => c.name.includes("concurrent"))!;
     await assert.rejects(race.run());
   });
+
+  it("a revokeFamily that misses a successor inserted by a racing rotation fails the race case", async () => {
+    const race = grantStoreContract(() => new SnapshotRevokeStore()).find((c) => c.name.includes("racing a rotation"))!;
+    await assert.rejects(race.run(), /a row of a revoked family stayed live/);
+  });
 });
 
 describe("MemoryCodeStore", () => {
   it("expires codes on its own clock and sweeps them on the next put", async () => {
     const time = clock();
     const store = new MemoryCodeStore({ now: time.now });
-    const record: CodeRecord = { subject: "s", clientId: "c", redirectUri: "r", codeChallenge: "x", scopes: ["a"], context: {}, expiresAt: 0 };
+    const record: CodeRecord = { subject: "s", clientId: "c", redirectUri: "r", codeChallenge: "x", scopes: ["a"], context: {}, authorizedAt: 0, expiresAt: 0 };
     await store.put("a", record, 60);
     await store.put("b", record, 120);
     time.advance(60_000);
@@ -70,7 +107,7 @@ describe("MemoryCodeStore", () => {
 
   it("uses the wall clock by default", async () => {
     const store = new MemoryCodeStore();
-    await store.put("a", { subject: "s", clientId: "c", redirectUri: "r", codeChallenge: "x", scopes: ["a"], context: {}, expiresAt: 0 }, 60);
+    await store.put("a", { subject: "s", clientId: "c", redirectUri: "r", codeChallenge: "x", scopes: ["a"], context: {}, authorizedAt: 0, expiresAt: 0 }, 60);
     assert.ok(await store.take("a"));
   });
 });

@@ -1,8 +1,9 @@
 /**
  * The one configuration object, checked once by `createFrontdesk`. There are
  * no product defaults: the URLs, scopes, client hosts and redirect URIs are
- * the host's. Only the lifetimes have defaults, and they are security
- * parameters (see SPEC.md).
+ * the host's. What has a default is derived from the host's own values
+ * (`defaultScopes`, `resourcePaths`) or is a security parameter (the
+ * lifetimes, `refreshTokenReuse`; see SPEC.md).
  */
 import type { HostResolver } from "./ssrf.ts";
 import type { KeyProvider } from "./keys.ts";
@@ -214,9 +215,21 @@ function stringList(name: string, raw: unknown, allowEmpty: boolean): string[] {
   return [...(raw as string[])];
 }
 
+/** Is `raw` a canonical absolute path: no host, query, fragment or dot segment, nothing the URL parser would rewrite? */
+function isCanonicalPath(raw: string): boolean {
+  return raw.startsWith("/") && new URL(raw, "https://path.invalid").pathname === raw;
+}
+
 function endpoint(name: string, raw: unknown, issuer: string): string {
   if (typeof raw !== "string" || raw === "") fail(`${name} must be a path or a URL`);
-  const url = raw.startsWith("/") ? new URL(raw, new URL(issuer).origin) : parseUrl(name, raw);
+  let url: URL;
+  if (raw.startsWith("/")) {
+    // A path resolves against the issuer's origin. `//host/x` (or `/\host/x`) would name another host.
+    url = new URL(raw, new URL(issuer).origin);
+    if (url.origin !== new URL(issuer).origin) fail(`${name} must be a path on the issuer's origin, or an absolute URL`);
+  } else {
+    url = parseUrl(name, raw);
+  }
   if (!secureOrLoopback(url)) fail(`${name} must be https (http only on a loopback host)`);
   return url.href;
 }
@@ -242,7 +255,8 @@ export function resolveConfig(config: FrontdeskConfig): ResolvedConfig {
 
   const resourcePaths =
     config.resourcePaths === undefined ? [new URL(resource).pathname] : stringList("resourcePaths", config.resourcePaths, false);
-  if (resourcePaths.some((path) => !path.startsWith("/"))) fail("resourcePaths must be absolute paths");
+  // The gate compares them with a request's pathname, which never holds a query or a fragment.
+  if (!resourcePaths.every(isCanonicalPath)) fail("resourcePaths must be absolute paths, canonical, with no query or fragment");
 
   const clientIdHosts = stringList("clientIdHosts", config.clientIdHosts, false);
   const redirectUris = stringList("redirectUris", config.redirectUris, true);

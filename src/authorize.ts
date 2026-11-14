@@ -110,14 +110,24 @@ function toRaw(params: RawAuthorizeParams | URLSearchParams): RawAuthorizeParams
   return raw;
 }
 
-/** Does a `resource` parameter name this resource? Scheme and host case are forgiven (MCP asks for that). */
+/**
+ * Does a `resource` parameter name this resource? Scheme and host case are
+ * forgiven (MCP asks for that), and nothing else: the raw value must be the
+ * resource's origin followed by exactly its path. Comparing only the parsed
+ * form would let through what the parser drops (userinfo, even an empty `@`,
+ * an empty `?` or `#`, backslashes, surrounding space, an explicit default port).
+ */
 export function sameResource(param: string, resource: string): boolean {
+  let url: URL;
   try {
-    const url = new URL(param);
-    return url.search === "" && !param.includes("#") && canonicalUrl(url) === resource;
+    url = new URL(param);
   } catch {
     return false;
   }
+  const head = param.slice(0, url.origin.length);
+  const rest = param.slice(url.origin.length);
+  const exactPath = rest === url.pathname || (url.pathname === "/" && rest === "");
+  return head.toLowerCase() === url.origin && exactPath && canonicalUrl(url) === resource;
 }
 
 export function createAuthorize(ctx: Context) {
@@ -220,6 +230,7 @@ export function createAuthorize(ctx: Context) {
     }
 
     const bare = randomToken(32);
+    const approvedAt = config.now();
     let handed: string;
     try {
       handed = ctx.hooks.tokenWrapper ? ctx.hooks.tokenWrapper.wrap("code", bare) : bare;
@@ -232,7 +243,8 @@ export function createAuthorize(ctx: Context) {
           codeChallenge: request.codeChallenge,
           scopes,
           context,
-          expiresAt: config.now() + config.codeTtlSeconds * 1000,
+          authorizedAt: approvedAt,
+          expiresAt: approvedAt + config.codeTtlSeconds * 1000,
         },
         config.codeTtlSeconds,
       );

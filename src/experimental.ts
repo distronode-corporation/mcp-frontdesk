@@ -45,6 +45,26 @@ export interface Fence {
   readonly instructions: string;
 }
 
+/**
+ * Text for any value: a string as it is, anything else as JSON, and what JSON
+ * cannot serialise (a BigInt, a symbol, a cycle) as `String(value)`. Null when
+ * the value cannot be turned into text at all.
+ */
+function textOf(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  try {
+    const json = JSON.stringify(value);
+    if (json !== undefined) return json;
+  } catch {
+    // A BigInt, a cycle, or a toJSON that throws: fall through to String.
+  }
+  try {
+    return String(value);
+  } catch {
+    return null; // no toString and no primitive value (an object with a null prototype)
+  }
+}
+
 export function createFence(options: FenceOptions = {}): Fence {
   const token = options.token ?? PROCESS_TOKEN;
   if (token.length < 16 || /[\r\n]/.test(token)) throw new TypeError("a fence token must be at least 16 characters on one line");
@@ -52,9 +72,11 @@ export function createFence(options: FenceOptions = {}): Fence {
 
   function neutralize(value: unknown, maxChars: number = defaultMax): string | null {
     if (value === null || value === undefined) return null;
-    const raw = typeof value === "string" ? value : JSON.stringify(value);
+    const raw = textOf(value);
+    if (raw === null) return null;
+    // C0 controls but tab and newline, DEL, and the C1 controls.
     const cleaned = raw
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ")
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, " ")
       .replaceAll(token, "[removed]")
       .replace(FENCE_SHAPED, "[removed]")
       .trim();

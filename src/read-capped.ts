@@ -4,10 +4,13 @@
  *
  * The cap is enforced on the stream: a declared Content-Length over the cap is
  * refused before a byte is read, and a missing or lying one is caught chunk by
- * chunk, cancelling the stream at the first chunk that crosses the cap. What is
- * ever held in memory is the cap plus at most one arriving chunk. Reading the
- * whole body and checking its length afterwards would buffer exactly the bytes
- * this exists to refuse.
+ * chunk, cancelling the stream at the first chunk that crosses the cap. Each
+ * chunk is copied into one buffer of the cap's size as it arrives and then let
+ * go, so what is ever held in memory is that buffer plus at most one arriving
+ * chunk, however many chunks the body is cut into (and a source that reuses its
+ * own buffer cannot change bytes already read). Reading the whole body and
+ * checking its length afterwards would buffer exactly the bytes this exists to
+ * refuse.
  *
  * Never truncates: the caller gets the whole body or a refusal.
  */
@@ -29,23 +32,17 @@ export async function readCapped(
   }
   if (body === null) return { ok: true, bytes: new Uint8Array(0) };
   const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
+  const buffer = new Uint8Array(maxBytes);
   let total = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
+    if (total + value.byteLength > maxBytes) {
       await reader.cancel().catch(ignore);
       return { ok: false, reason: "too_large" };
     }
-    chunks.push(value);
+    buffer.set(value, total);
+    total += value.byteLength;
   }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return { ok: true, bytes: out };
+  return { ok: true, bytes: buffer.subarray(0, total) };
 }

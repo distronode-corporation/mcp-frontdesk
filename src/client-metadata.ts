@@ -9,9 +9,12 @@
  * The fetch goes through the SSRF guard (ssrf.ts) and a pinned GET
  * (pinned-get.ts) by default: name hosts only, resolved once, private ranges
  * refused, connection pinned, no redirects, a 5 second deadline and a 5 KB cap.
+ * The deadline is one wall-clock budget for the whole fetch, the DNS lookup and
+ * the body included: when it passes, the answer is `unreachable`, whatever is
+ * still pending, and its signal aborts the request in flight.
  * A caller-supplied fetch replaces the guard only through the option named
  * `unsafeFetchClientMetadata`; the deadline, the cap and every document check
- * still apply to it.
+ * still apply to it, even if it ignores the signal.
  *
  * Never throws for anything the remote side does: every fault is a typed refusal.
  */
@@ -106,6 +109,24 @@ export interface ClientMetadataOptions {
   transport?: Transport | undefined;
 }
 
+type FetchOutcome = PinnedGetResult | { ok: false; reason: "blocked" };
+
+/**
+ * Run `get` under one deadline of `ms`: its signal aborts when the time is up,
+ * and the answer is then `unreachable` even if `get` never settles.
+ */
+function underDeadline(ms: number, get: (signal: AbortSignal) => Promise<FetchOutcome>): Promise<FetchOutcome> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<FetchOutcome>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ ok: false, reason: "unreachable" });
+    }, ms);
+  });
+  return Promise.race([get(controller.signal), expired]).finally(() => clearTimeout(timer));
+}
+
 /** The fetcher, with a small per-instance cache of good documents. */
 export class ClientMetadataFetcher {
   readonly #options: ClientMetadataOptions;
@@ -126,7 +147,9 @@ export class ClientMetadataFetcher {
     if (hit && hit.expiresAt > now) return { ok: true, metadata: hit.metadata };
     this.#cache.delete(clientId);
 
-    const fetched = this.#options.unsafeFetch ? await this.#unsafeGet(clientId) : await this.#guardedGet(clientId);
+    const fetched = await underDeadline(CLIENT_METADATA_TIMEOUT_MS, (signal) =>
+      this.#options.unsafeFetch ? this.#unsafeGet(clientId, signal) : this.#guardedGet(clientId, signal),
+    );
     if (!fetched.ok) return fetched;
 
     let doc: unknown;
@@ -144,20 +167,15 @@ export class ClientMetadataFetcher {
     return result;
   }
 
-  async #guardedGet(clientId: string): Promise<PinnedGetResult | { ok: false; reason: "blocked" }> {
+  async #guardedGet(clientId: string, signal: AbortSignal): Promise<FetchOutcome> {
     const url = new URL(clientId);
     const guard = await resolvePublicAddresses(url.hostname, this.#options.resolveHost);
     if (!guard.ok) return { ok: false, reason: guard.reason === "blocked" ? "blocked" : "unreachable" };
-    return pinnedGet(
-      url,
-      guard.addresses,
-      { timeoutMs: CLIENT_METADATA_TIMEOUT_MS, maxBytes: CLIENT_METADATA_MAX_BYTES },
-      this.#options.transport,
-    );
+    // A lookup that answered after the deadline finds the signal aborted, and pinnedGet starts nothing.
+    return pinnedGet(url, guard.addresses, { signal, maxBytes: CLIENT_METADATA_MAX_BYTES }, this.#options.transport);
   }
 
-  async #unsafeGet(clientId: string): Promise<PinnedGetResult> {
-    const signal = AbortSignal.timeout(CLIENT_METADATA_TIMEOUT_MS);
+  async #unsafeGet(clientId: string, signal: AbortSignal): Promise<PinnedGetResult> {
     try {
       const res = await this.#options.unsafeFetch!(clientId, { signal });
       const contentType = res.headers.get("content-type");

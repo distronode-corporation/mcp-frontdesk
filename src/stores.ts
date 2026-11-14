@@ -19,6 +19,8 @@ export interface CodeRecord {
   codeChallenge: string;
   scopes: readonly string[];
   context: GrantContext;
+  /** When the person approved, in milliseconds since the epoch. Becomes the grant's `authorizedAt`. */
+  authorizedAt: number;
   /** Milliseconds since the epoch. Checked by the token endpoint as well as by the store's TTL. */
   expiresAt: number;
 }
@@ -46,7 +48,7 @@ export interface GrantRecord {
   clientId: string;
   scopes: readonly string[];
   context: GrantContext;
-  /** When the person approved: the family's first row's creation time. */
+  /** When the person approved (the consent, carried in the code), the same on every row of a family. */
   authorizedAt: Date;
   createdAt: Date;
   expiresAt: Date;

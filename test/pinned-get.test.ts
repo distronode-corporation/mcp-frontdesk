@@ -20,7 +20,8 @@ const server = createServer((req, res) => {
 });
 let transport: Transport;
 const LOOPBACK = [{ address: "127.0.0.1", family: 4 }];
-const LIMITS = { timeoutMs: 1_000, maxBytes: 64 };
+/** A 64-byte cap and a fresh deadline of `ms`. */
+const limits = (ms = 1_000) => ({ signal: AbortSignal.timeout(ms), maxBytes: 64 });
 
 before(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -40,7 +41,7 @@ describe("pinnedGet", () => {
       res.end('{"ok":true}');
     };
     seen.length = 0;
-    const result = await pinnedGet(url, LOOPBACK, LIMITS, transport);
+    const result = await pinnedGet(url, LOOPBACK, limits(), transport);
     assert.deepEqual(result, {
       ok: true,
       contentType: "application/json",
@@ -57,7 +58,7 @@ describe("pinnedGet", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end("{}");
     };
-    const result = await pinnedGet(url, LOOPBACK, LIMITS, transport);
+    const result = await pinnedGet(url, LOOPBACK, limits(), transport);
     assert.equal(result.ok && result.cacheControl, null);
   });
 
@@ -68,7 +69,7 @@ describe("pinnedGet", () => {
       res.end();
     };
     seen.length = 0;
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, LIMITS, transport), { ok: false, reason: "http_status" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits(), transport), { ok: false, reason: "http_status" });
     assert.equal(seen.length, 1);
   });
 
@@ -77,13 +78,13 @@ describe("pinnedGet", () => {
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end("<html>");
     };
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, LIMITS, transport), { ok: false, reason: "not_json" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits(), transport), { ok: false, reason: "not_json" });
     handler = (_req, res) => {
       res.removeHeader("Content-Type");
       res.writeHead(200);
       res.end("{}");
     };
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, LIMITS, transport), { ok: false, reason: "not_json" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits(), transport), { ok: false, reason: "not_json" });
   });
 
   it("refuses a declared length over the cap before reading", async () => {
@@ -91,7 +92,7 @@ describe("pinnedGet", () => {
       res.writeHead(200, { "Content-Type": "application/json", "Content-Length": "65" });
       res.end("x".repeat(65));
     };
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, LIMITS, transport), { ok: false, reason: "too_large" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits(), transport), { ok: false, reason: "too_large" });
   });
 
   it("cuts off an endless body at the cap and closes the connection", async () => {
@@ -109,7 +110,7 @@ describe("pinnedGet", () => {
         closed();
       });
     };
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, LIMITS, transport), { ok: false, reason: "too_large" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits(), transport), { ok: false, reason: "too_large" });
     await closedPromise;
     assert.ok(written < 64 * 20, `the server kept writing (${written} bytes)`);
   });
@@ -117,8 +118,17 @@ describe("pinnedGet", () => {
   it("gives up at the deadline", async () => {
     handler = () => undefined; // never answers
     const started = Date.now();
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, { ...LIMITS, timeoutMs: 100 }, transport), { ok: false, reason: "unreachable" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits(100), transport), { ok: false, reason: "unreachable" });
     assert.ok(Date.now() - started < 900);
+  });
+
+  it("starts nothing when the deadline has already passed", async () => {
+    const before = seen.length;
+    const done = new AbortController();
+    done.abort();
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, { signal: done.signal, maxBytes: 64 }, transport), { ok: false, reason: "unreachable" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(seen.length, before);
   });
 
   it("answers unreachable when the body breaks mid-stream", async () => {
@@ -127,12 +137,12 @@ describe("pinnedGet", () => {
       res.write("{");
       setTimeout(() => res.socket?.destroy(), 10);
     };
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, LIMITS, transport), { ok: false, reason: "unreachable" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits(), transport), { ok: false, reason: "unreachable" });
   });
 
   it("answers unreachable when nothing listens, through the default https transport", async () => {
     // 127.0.0.1:443 on a test machine: refused, or not a valid certificate for the name. Either is unreachable.
-    assert.deepEqual(await pinnedGet(url, LOOPBACK, LIMITS), { ok: false, reason: "unreachable" });
+    assert.deepEqual(await pinnedGet(url, LOOPBACK, limits()), { ok: false, reason: "unreachable" });
   });
 });
 

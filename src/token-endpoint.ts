@@ -8,20 +8,22 @@
  *   - A client secret or an Authorization header is refused, not ignored.
  *   - Before any code is spent or any token rotated, the signing key must be
  *     there: a burnt code the server could never turn into a token would cost
- *     the person a reconnect for the server's own gap.
+ *     the person a reconnect for the server's own gap. The key is fetched once
+ *     per request and that same key signs the access token.
  *   - Every refusal of a code or a grant is the same `invalid_grant`, so there
  *     is no oracle between "replayed", "wrong verifier", "expired" and "never
  *     existed". The reason goes to the audit sink, never to the client.
  *   - A code store that fails is a refusal, never an issue.
  *   - `Cache-Control: no-store` on every answer.
  */
-import { mintAccessToken, NoSigningKeyError } from "./access-token.ts";
+import { mintAccessToken } from "./access-token.ts";
 import { sameResource } from "./authorize.ts";
 import type { GrantInfo } from "./config.ts";
 import type { Context } from "./context.ts";
 import { sha256Hex } from "./encoding.ts";
 import { createGrant, grantIsActive, liveScopes, rotateGrant } from "./grants.ts";
 import { deriveCodeChallenge, isValidCodeVerifier } from "./pkce.ts";
+import type { SigningKey } from "./keys.ts";
 import { readCapped } from "./read-capped.ts";
 import type { CodeRecord } from "./stores.ts";
 
@@ -77,13 +79,14 @@ export function createTokenEndpoint(ctx: Context) {
   const resourceOk = (form: Map<string, string>) => !form.has("resource") || sameResource(form.get("resource")!, config.resource);
 
   /**
-   * The access token for `info`. Called by createGrant and rotateGrant before
-   * they write to the store, so a throw here (a claims hook, the key) spends nothing.
+   * The access token for `info`, signed with the key this request already
+   * holds. Called by createGrant and rotateGrant before they write to the
+   * store, so a throw here (a claims hook) spends nothing.
    */
-  async function mint(info: GrantInfo): Promise<string> {
+  const minter = (key: SigningKey) => async (info: GrantInfo): Promise<string> => {
     const extra = hooks.accessTokenClaims ? await hooks.accessTokenClaims(info) : {};
-    return mintAccessToken(config, hooks.keys, info, extra);
-  }
+    return mintAccessToken(config, key, info, extra);
+  };
 
   function tokenResponse(request: Request, info: GrantInfo, accessToken: string, refreshToken: string): Response {
     return json(request, {
@@ -100,7 +103,7 @@ export function createTokenEndpoint(ctx: Context) {
     return error(request, "invalid_grant");
   }
 
-  async function authorizationCode(request: Request, form: Map<string, string>, clientId: string): Promise<Response> {
+  async function authorizationCode(request: Request, form: Map<string, string>, clientId: string, key: SigningKey): Promise<Response> {
     const code = form.get("code");
     const verifier = form.get("code_verifier");
     const redirectUri = form.get("redirect_uri");
@@ -129,7 +132,9 @@ export function createTokenEndpoint(ctx: Context) {
     // A scope removed from the config since the approval is dropped (the response's `scope` says so).
     const scopes = liveScopes(ctx, record.scopes);
     if (scopes.length === 0) return refused(request, "authorization_code", "no_scope");
-    const authorizedAt = new Date(config.now());
+    // When the person said yes, not when the client redeemed the code: a cutoff
+    // (a password reset, say) between the two must still end the grant.
+    const authorizedAt = new Date(record.authorizedAt);
     const pending: GrantInfo = {
       subject: record.subject,
       clientId,
@@ -140,11 +145,11 @@ export function createTokenEndpoint(ctx: Context) {
     };
     if (!(await grantIsActive(ctx, pending))) return refused(request, "authorization_code", "inactive");
 
-    const grant = await createGrant(ctx, { subject: record.subject, clientId, scopes, context: record.context }, mint);
+    const grant = await createGrant(ctx, { subject: record.subject, clientId, scopes, context: record.context, authorizedAt }, minter(key));
     return tokenResponse(request, grant.info, grant.issued, grant.refreshToken);
   }
 
-  async function refreshToken(request: Request, form: Map<string, string>, clientId: string): Promise<Response> {
+  async function refreshToken(request: Request, form: Map<string, string>, clientId: string, key: SigningKey): Promise<Response> {
     const presented = form.get("refresh_token");
     if (!presented) return error(request, "invalid_request");
     if (!resourceOk(form)) return error(request, "invalid_target");
@@ -158,7 +163,7 @@ export function createTokenEndpoint(ctx: Context) {
         return error(request, "invalid_scope");
       }
     }
-    const rotated = await rotateGrant(ctx, presented, clientId, mint);
+    const rotated = await rotateGrant(ctx, presented, clientId, minter(key));
     if (!rotated.ok) return refused(request, "refresh_token", rotated.reason);
     return tokenResponse(request, rotated.grant.info, rotated.grant.issued, rotated.grant.refreshToken);
   }
@@ -169,7 +174,12 @@ export function createTokenEndpoint(ctx: Context) {
       if (request.method === "OPTIONS") {
         return new Response(null, {
           status: 204,
-          headers: { ...corsHeaders(ctx, request), "Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "Content-Type" },
+          headers: {
+            ...NO_STORE,
+            ...corsHeaders(ctx, request),
+            "Access-Control-Allow-Methods": "POST",
+            "Access-Control-Allow-Headers": "Content-Type",
+          },
         });
       }
       if (request.method !== "POST") return json(request, { error: "invalid_request" }, 405, { Allow: "POST, OPTIONS" });
@@ -185,7 +195,7 @@ export function createTokenEndpoint(ctx: Context) {
       if (grantType !== "authorization_code" && grantType !== "refresh_token") {
         return error(request, grantType ? "unsupported_grant_type" : "invalid_request");
       }
-      let key;
+      let key: SigningKey | null;
       try {
         key = await hooks.keys.signingKey();
       } catch (err) {
@@ -194,10 +204,9 @@ export function createTokenEndpoint(ctx: Context) {
       }
       if (!key) return error(request, "temporarily_unavailable", 503);
       return grantType === "authorization_code"
-        ? await authorizationCode(request, form, clientId)
-        : await refreshToken(request, form, clientId);
+        ? await authorizationCode(request, form, clientId, key)
+        : await refreshToken(request, form, clientId, key);
     } catch (err) {
-      if (err instanceof NoSigningKeyError) return error(request, "temporarily_unavailable", 503);
       ctx.report("tokenEndpoint", err);
       return error(request, "server_error", 500);
     }

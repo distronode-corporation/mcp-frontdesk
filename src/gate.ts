@@ -4,7 +4,7 @@
  *
  *   - No Authorization header: 401 with `WWW-Authenticate: Bearer
  *     resource_metadata="..."`, so a client discovers the authorization server.
- *   - A header that is not a well-formed bearer token, or a token that does not
+ *   - A header that is empty or not a well-formed bearer token, or a token that does not
  *     verify, or a request path the token may not be used on: the same 401 with
  *     `error="invalid_token"`, so a client holding one refreshes. Which check
  *     failed is not something the holder of a refused token gets told.
@@ -12,6 +12,7 @@
  *     `error="insufficient_scope"` and the scopes needed (MCP step-up).
  *   - A browser `Origin` that is not allowed: 403, before anything else (the
  *     MCP transport's DNS-rebinding rule).
+ *   - A rate limiter that says no: 429; one that throws: reported, and 503.
  */
 import { verifyAccessToken, type VerifiedAccessToken } from "./access-token.ts";
 import type { Context } from "./context.ts";
@@ -73,14 +74,28 @@ export function createGate(ctx: Context) {
     if (forbiddenOrigin(ctx, request)) {
       return { ok: false, response: Response.json({ error: "forbidden_origin" }, { status: 403, headers: { "Cache-Control": "no-store" } }) };
     }
-    if (ctx.hooks.rateLimiter && !(await ctx.hooks.rateLimiter.allow("resource", request))) {
-      return {
-        ok: false,
-        response: Response.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": "60", "Cache-Control": "no-store" } }),
-      };
+    if (ctx.hooks.rateLimiter) {
+      let allowed: boolean;
+      try {
+        allowed = await ctx.hooks.rateLimiter.allow("resource", request);
+      } catch (err) {
+        // A limiter that cannot answer fails closed, and never throws into the host's handler.
+        ctx.report("rateLimiter.resource", err);
+        return {
+          ok: false,
+          response: Response.json({ error: "temporarily_unavailable" }, { status: 503, headers: { "Cache-Control": "no-store" } }),
+        };
+      }
+      if (!allowed) {
+        return {
+          ok: false,
+          response: Response.json({ error: "rate_limited" }, { status: 429, headers: { "Retry-After": "60", "Cache-Control": "no-store" } }),
+        };
+      }
     }
     const header = request.headers.get("authorization");
-    if (!header) return { ok: false, response: unauthorized(false) };
+    // Absent: discovery. Present but empty or malformed: a refused credential.
+    if (header === null) return { ok: false, response: unauthorized(false) };
     const token = bearerTokenFrom(header);
     if (!token) return { ok: false, response: unauthorized(true) };
     // The token authenticates on the resource's own paths and nowhere else.

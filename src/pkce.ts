@@ -10,11 +10,14 @@ export function isValidCodeVerifier(verifier: string): boolean {
 
 /**
  * An S256 challenge is base64url of a 32-byte digest: exactly 43 characters,
- * unpadded. Checking the shape at authorize time means a broken client fails
- * there with a clear error, not later as a verifier mismatch.
+ * unpadded. 43 characters carry 258 bits, so the last one holds 4 bits of the
+ * digest and 2 that are always zero: only 16 of the 64 characters can end a
+ * real challenge. Checking the shape at authorize time means a broken client
+ * fails there with a clear error, not later as a verifier mismatch, and no
+ * code is issued that no verifier could ever redeem.
  */
 export function isValidCodeChallenge(challenge: string): boolean {
-  return /^[A-Za-z0-9\-_]{43}$/.test(challenge);
+  return /^[A-Za-z0-9\-_]{42}[AEIMQUYcgkosw048]$/.test(challenge);
 }
 
 /** BASE64URL(SHA256(ASCII(code_verifier))). */

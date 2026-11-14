@@ -146,13 +146,26 @@ describe("ClientMetadataFetcher with the unsafe fetch option", () => {
     assert.deepEqual(await breaks.fetch(CLIENT_ID), { ok: false, reason: "unreachable" });
   });
 
-  it("passes a 5 second deadline signal to the fetch", async () => {
+  it("gives the fetch 5 seconds, then aborts its signal and refuses it, even a fetch that ignores the signal", { timeout: 5_000 }, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
     let signal: AbortSignal | undefined;
-    await fetcher(async (_url, init) => {
+    const pending = fetcher((_url, init) => {
       signal = init.signal;
-      return jsonResponse(CLIENT_DOCUMENT);
+      return new Promise<Response>(() => undefined); // never answers, never listens
     }).fetch(CLIENT_ID);
+    t.mock.timers.tick(4_999);
     assert.ok(signal instanceof AbortSignal && !signal.aborted);
+    t.mock.timers.tick(1);
+    assert.deepEqual(await pending, { ok: false, reason: "unreachable" });
+    assert.equal(signal.aborted, true);
+  });
+
+  it("holds the body read to the same deadline", { timeout: 5_000 }, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const stalled = new ReadableStream<Uint8Array>({ pull: () => new Promise(() => undefined) });
+    const pending = fetcher(async () => new Response(stalled, { headers: { "Content-Type": "application/json" } })).fetch(CLIENT_ID);
+    t.mock.timers.tick(5_000);
+    assert.deepEqual(await pending, { ok: false, reason: "unreachable" });
   });
 
   it("caps the body at 5 KB while streaming, and accepts exactly 5 KB", async () => {
@@ -277,6 +290,21 @@ describe("ClientMetadataFetcher through the SSRF guard (safety property 1)", () 
       throw new Error("ENOTFOUND");
     });
     assert.deepEqual(await f.fetch(CLIENT_ID), { ok: false, reason: "unreachable" });
+  });
+
+  it("holds the lookup to the same 5 second deadline as the fetch", { timeout: 5_000 }, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const { transport, pinned } = recordingTransport();
+    let answer: ((addresses: { address: string; family: number }[]) => void) | undefined;
+    const f = guarded(() => new Promise((resolve) => (answer = resolve)), transport);
+    const pending = f.fetch(CLIENT_ID);
+    t.mock.timers.tick(4_999);
+    t.mock.timers.tick(1);
+    assert.deepEqual(await pending, { ok: false, reason: "unreachable" });
+    // A lookup that answers after the deadline starts no connection.
+    answer!([{ address: "93.184.215.14", family: 4 }]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(pinned.length, 0);
   });
 
   it("maps a transport refusal through unchanged", async () => {

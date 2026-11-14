@@ -51,6 +51,16 @@ describe("PKCE", () => {
       assert.equal(isValidCodeChallenge(bad), false, bad);
     }
   });
+
+  it("refuses a challenge no 32-byte digest can produce (a last character with stray low bits)", () => {
+    assert.equal(isValidCodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cN"), false);
+    assert.equal(isValidCodeChallenge(`${"a".repeat(42)}B`), false);
+    for (const last of "AEIMQUYcgkosw048") assert.equal(isValidCodeChallenge(`${"a".repeat(42)}${last}`), true, last);
+    for (let i = 0; i < 200; i += 1) {
+      const challenge = deriveCodeChallenge(randomToken(32));
+      assert.equal(isValidCodeChallenge(challenge), true, challenge);
+    }
+  });
 });
 
 /** A stream that serves `chunk` forever and counts how many chunks were pulled. */
@@ -100,6 +110,23 @@ describe("readCapped (safety property 2: streaming caps)", () => {
   it("reads no body as empty, and refuses a declared length even with no body", async () => {
     assert.deepEqual(await readCapped(null, 10), { ok: true, bytes: new Uint8Array(0) });
     assert.deepEqual(await readCapped(null, 10, "11"), { ok: false, reason: "too_large" });
+  });
+
+  it("copies each chunk as it arrives, so a source that reuses its buffer cannot change what was read", async () => {
+    const shared = new Uint8Array(2);
+    let n = 0;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (n === 3) return controller.close();
+          n += 1;
+          shared.fill(n);
+          controller.enqueue(shared);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    assert.deepEqual(await readCapped(stream, 6), { ok: true, bytes: new Uint8Array([1, 1, 2, 2, 3, 3]) });
   });
 
   it("ignores a cancel that rejects", async () => {

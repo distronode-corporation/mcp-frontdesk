@@ -22,6 +22,28 @@ describe("createFence", () => {
     assert.equal(fence.neutralize("a\u0000b\u001bc\td\ne\u007f"), "a b c\td\ne");
   });
 
+  it("neutralizes C1 control characters too, and keeps the printable range above them", () => {
+    const fence = createFence();
+    assert.equal(fence.neutralize("a\u0080b\u0085c\u009bd\u009fe\u00a0f"), "a b c d e\u00a0f");
+  });
+
+  it("takes any value: a BigInt, a symbol, a cycle, and one that cannot be turned into text at all", () => {
+    const fence = createFence({ token: "[[FENCE-0123456789]]" });
+    assert.equal(fence.neutralize(12n), "12");
+    assert.equal(fence.neutralize(Symbol("s")), "Symbol(s)");
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    assert.equal(fence.neutralize(cycle), "[object Object]");
+    const opaque = Object.assign(Object.create(null) as object, {
+      toJSON() {
+        throw new Error("no");
+      },
+    });
+    assert.equal(fence.neutralize(opaque), null);
+    assert.equal(fence.wrap("x", opaque), "(none)");
+    assert.ok(fence.wrap("count", 3n).includes("\n3\n"));
+  });
+
   it("removes the fence token, and anything shaped like one, so content cannot close its own block", () => {
     const fence = createFence({ token: "[[FENCE-0123456789]]" });
     assert.equal(fence.neutralize("x [[FENCE-0123456789]] y <<<UNTRUSTED_DATA_guess>>> z"), "x [removed] y [removed] z");

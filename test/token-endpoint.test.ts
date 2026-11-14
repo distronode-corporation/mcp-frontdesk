@@ -99,7 +99,7 @@ describe("token endpoint: authorization_code", () => {
     const code = await approveCode(h);
     const record = await h.codes.take(sha256Hex(code));
     const stale: CodeStore = { put: async () => undefined, take: async () => ({ ...record!, expiresAt: h.clock.now() }) };
-    const s = await harness({ codeStore: stale, now: h.clock.now });
+    const s = await harness({ codeStore: stale }, { clock: h.clock });
     assert.deepEqual(slim(await post(s, codeForm(code))), INVALID_GRANT);
     assert.equal((s.events.at(-1) as { reason: string }).reason, "expired");
   });
@@ -124,6 +124,19 @@ describe("token endpoint: authorization_code", () => {
     const t = await harness({ isGrantActive: () => Promise.reject(new Error("db down")) });
     assert.deepEqual(slim(await post(t, codeForm(await approveCode(t)))), INVALID_GRANT);
     assert.equal(t.reports[0]?.where, "isGrantActive");
+  });
+
+  it("carries the consent time in the code: authorizedAt is when the person approved, not when the code was redeemed", async () => {
+    const seen: Date[] = [];
+    const h = await harness({ isGrantActive: (g) => (seen.push(g.authorizedAt), true) });
+    const approvedAt = h.clock.now();
+    const code = await approveCode(h);
+    h.clock.advance(30_000);
+    assert.equal((await post(h, codeForm(code))).status, 200);
+    assert.deepEqual(seen, [new Date(approvedAt)]);
+    const [summary] = await h.fd.listGrants("user-1");
+    assert.equal(summary?.authorizedAt.getTime(), approvedAt);
+    assert.equal(summary?.lastRefreshedAt.getTime(), approvedAt + 30_000);
   });
 
   it("checks the resource parameter, and accepts its absence", async () => {
@@ -241,24 +254,33 @@ describe("token endpoint: the request itself", () => {
     let keyThere = false;
     const real = h.keys;
     const flaky: KeyProvider = { signingKey: async () => (keyThere ? real.signingKey() : null), verificationKey: (kid) => real.verificationKey(kid) };
-    const s = await harness({ keys: flaky, codeStore: h.codes, now: h.clock.now });
+    const s = await harness({ keys: flaky, codeStore: h.codes }, { clock: h.clock });
     assert.deepEqual(slim(await post(s, codeForm(code))), { status: 503, body: { error: "temporarily_unavailable" } });
     keyThere = true;
     assert.equal((await post(s, codeForm(code))).status, 200, "the code survived the refusal");
   });
 
-  it("a key provider that throws, or a key that vanishes mid-request, is temporarily_unavailable", async () => {
+  it("a key provider that throws is temporarily_unavailable", async () => {
     const h = await harness({ keys: { signingKey: () => Promise.reject(new Error("kms")), verificationKey: async () => null } });
     assert.deepEqual(slim(await post(h, refreshForm("x"))), { status: 503, body: { error: "temporarily_unavailable" } });
     assert.equal(h.reports[0]?.where, "keys.signingKey");
+  });
 
+  it("asks for the key once per request and signs with it, so a key that vanishes after the check cannot burn the code", async () => {
     const real = (await harness()).keys;
     let calls = 0;
     const vanishing: KeyProvider = { signingKey: async () => (++calls === 1 ? real.signingKey() : null), verificationKey: real.verificationKey };
     const v = await harness({ keys: vanishing });
     const code = await approveCode(v);
     calls = 0;
-    assert.deepEqual(slim(await post(v, codeForm(code))), { status: 503, body: { error: "temporarily_unavailable" } });
+    const exchanged = await post(v, codeForm(code));
+    assert.equal(exchanged.status, 200);
+    assert.equal(calls, 1);
+    calls = 0;
+    const refreshed = await post(v, refreshForm(exchanged.body.refresh_token));
+    assert.equal(refreshed.status, 200);
+    assert.equal(calls, 1);
+    assert.ok((await v.fd.authenticate(resourceRequest(refreshed.body.access_token))).ok);
   });
 
   it("a grant store that throws is a server error, so the client retries instead of dropping the connection", async () => {
@@ -282,6 +304,14 @@ describe("token endpoint: the request itself", () => {
     assert.deepEqual(seen, ["token", "token"]);
   });
 
+  it("a rate limiter that throws fails closed: reported, and a server error before anything is read", async () => {
+    const h = await harness({ rateLimiter: { allow: () => Promise.reject(new Error("limiter backend down")) } });
+    const code = await approveCode(h);
+    assert.deepEqual(slim(await post(h, codeForm(code))), { status: 500, body: { error: "server_error" } });
+    assert.equal(h.reports.at(-1)?.where, "tokenEndpoint");
+    assert.ok(await h.codes.take(sha256Hex(code)), "the code was not touched");
+  });
+
   it("answers CORS for an allowed origin, and refuses any other origin", async () => {
     const h = await harness();
     const allowed = await h.fd.handleToken(tokenRequest(refreshForm("x"), { Origin: "https://app.example.com" }));
@@ -290,6 +320,8 @@ describe("token endpoint: the request itself", () => {
     const preflight = await h.fd.handleToken(new Request(`${ISSUER}/token`, { method: "OPTIONS", headers: { Origin: "https://app.example.com" } }));
     assert.equal(preflight.status, 204);
     assert.equal(preflight.headers.get("access-control-allow-methods"), "POST");
+    assert.equal(preflight.headers.get("cache-control"), "no-store");
+    assert.equal(preflight.headers.get("pragma"), "no-cache");
     const evil = await h.fd.handleToken(tokenRequest(refreshForm("x"), { Origin: "https://evil.example.net" }));
     assert.equal(evil.status, 403);
     assert.equal(evil.headers.get("access-control-allow-origin"), null);
@@ -491,7 +523,7 @@ describe("hooks that fail never change an answer", () => {
 describe("a scope removed from the config, and a mint that fails", () => {
   /** A second instance over the same stores, key and clock: the same server restarted with a new config. */
   async function restartedWith(h: Harness, overrides: Parameters<typeof harness>[0]) {
-    return harness({ grantStore: h.grants, codeStore: h.codes, keys: h.keys, now: h.clock.now, ...overrides });
+    return harness({ grantStore: h.grants, codeStore: h.codes, keys: h.keys, ...overrides }, { clock: h.clock });
   }
 
   it("a refresh narrows the grant to the scopes still configured, and says so in `scope`", async () => {
@@ -540,16 +572,8 @@ describe("a scope removed from the config, and a mint that fails", () => {
   });
 
   it("a mint that fails during a refresh leaves the presented refresh token usable", async () => {
-    let failing: "throw" | "registered" | "no-key-at-mint" | null = null;
-    let keyCalls = 0;
-    const real = (await harness()).keys;
-    // The endpoint asks for the key once before anything is spent (call 1); the mint asks again (call 2).
-    const keys: KeyProvider = {
-      signingKey: async () => (++keyCalls === 2 && failing === "no-key-at-mint" ? null : real.signingKey()),
-      verificationKey: (kid) => real.verificationKey(kid),
-    };
+    let failing: "throw" | "registered" | null = null;
     const h = await harness({
-      keys,
       accessTokenClaims: () => {
         if (failing === "throw") throw new Error("claims backend down");
         return failing === "registered" ? { sub: "someone-else" } : {};
@@ -558,13 +582,11 @@ describe("a scope removed from the config, and a mint that fails", () => {
     const first = await connect(h);
     const refresh = async (mode: typeof failing) => {
       failing = mode;
-      keyCalls = 0;
       return slim(await post(h, refreshForm(first.refresh_token)));
     };
 
     assert.deepEqual(await refresh("throw"), { status: 500, body: { error: "server_error" } });
     assert.deepEqual(await refresh("registered"), { status: 500, body: { error: "server_error" } });
-    assert.deepEqual(await refresh("no-key-at-mint"), { status: 503, body: { error: "temporarily_unavailable" } });
 
     // Nothing was spent: the same token refreshes, and the family is intact.
     const after = await refresh(null);

@@ -60,7 +60,19 @@ describe("authenticate", () => {
     const { access_token } = await connect(h);
     h.clock.advance(700_000);
     const result = await h.fd.authenticate(resourceRequest(access_token));
-    assert.ok(!result.ok && result.response.status === 401);
+    assert.ok(!result.ok);
+    assert.equal(result.response.status, 401);
+    assert.equal(result.response.headers.get("www-authenticate"), `Bearer resource_metadata="${PRM}", error="invalid_token"`);
+    assert.deepEqual(await result.response.json(), { error: "invalid_token" });
+  });
+
+  it("an Authorization header that is present but empty is a refused credential, not a missing one", async () => {
+    const h = await harness();
+    const result = await h.fd.authenticate(resourceRequest(null, "/mcp", { Authorization: "" }));
+    assert.ok(!result.ok);
+    assert.equal(result.response.status, 401);
+    assert.equal(result.response.headers.get("www-authenticate"), `Bearer resource_metadata="${PRM}", error="invalid_token"`);
+    assert.deepEqual(await result.response.json(), { error: "invalid_token" });
   });
 
   it("accepts every configured resource path, and only those", async () => {
@@ -100,6 +112,21 @@ describe("authenticate", () => {
     assert.ok(!result.ok);
     assert.equal(result.response.status, 429);
     assert.equal(result.response.headers.get("retry-after"), "60");
+  });
+
+  it("a rate limiter that fails is reported and refuses with 503, never an exception into the host", async () => {
+    const h = await harness({
+      rateLimiter: {
+        allow: (endpoint) => (endpoint === "resource" ? Promise.reject(new Error("limiter backend down")) : true),
+      },
+    });
+    const { access_token } = await connect(h);
+    const result = await h.fd.authenticate(resourceRequest(access_token));
+    assert.ok(!result.ok);
+    assert.equal(result.response.status, 503);
+    assert.equal(result.response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await result.response.json(), { error: "temporarily_unavailable" });
+    assert.equal(h.reports.at(-1)?.where, "rateLimiter.resource");
   });
 
   it("exposes the challenges for a host that refuses on its own", async () => {

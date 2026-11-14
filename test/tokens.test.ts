@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 
 import { SignJWT, decodeJwt, decodeProtectedHeader, generateKeyPair, type CryptoKey } from "jose";
 
-import { mintAccessToken, NoSigningKeyError, verifyAccessToken } from "../src/access-token.ts";
+import { mintAccessToken, verifyAccessToken } from "../src/access-token.ts";
 import type { GrantInfo } from "../src/config.ts";
 import { generateSigningJwk, KeyConfigError, keyProviderFromJwk, publicJwk, readEcJwk, type KeyProvider } from "../src/keys.ts";
 import { harness, ISSUER, RESOURCE, testJwk } from "./helpers.ts";
@@ -79,13 +79,16 @@ describe("keyProviderFromJwk", () => {
 
 async function mint(keys: KeyProvider, extra: Record<string, unknown> = {}, grant: GrantInfo = GRANT) {
   const h = await harness({ keys });
-  return { h, token: await mintAccessToken(h.fd.config, keys, grant, extra) };
+  return { h, token: await mintAccessToken(h.fd.config, (await keys.signingKey())!, grant, extra) };
 }
+
+/** The harness's signing key, as the token endpoint holds it for one request. */
+const signer = async (h: Awaited<ReturnType<typeof harness>>) => (await h.keys.signingKey())!;
 
 describe("mintAccessToken", () => {
   it("mints an RFC 9068 token with no email and every registered claim (safety property 5)", async () => {
     const h = await harness();
-    const token = await mintAccessToken(h.fd.config, h.keys, GRANT, {});
+    const token = await mintAccessToken(h.fd.config, await signer(h), GRANT, {});
     assert.deepEqual(decodeProtectedHeader(token), { alg: "ES256", typ: "at+jwt", kid: "test-key" });
     const claims = decodeJwt(token);
     assert.deepEqual(Object.keys(claims).sort(), ["aud", "client_id", "exp", "iat", "iss", "jti", "scope", "sub"]);
@@ -94,24 +97,22 @@ describe("mintAccessToken", () => {
     assert.equal(claims.sub, "user-1");
     assert.equal(claims.exp! - claims.iat!, 600);
     assert.equal(claims.iat, Math.floor(h.clock.now() / 1000));
-    assert.notEqual(decodeJwt(await mintAccessToken(h.fd.config, h.keys, GRANT, {})).jti, claims.jti);
+    assert.notEqual(decodeJwt(await mintAccessToken(h.fd.config, await signer(h), GRANT, {})).jti, claims.jti);
   });
 
   it("adds custom claims, and refuses every registered one", async () => {
     const h = await harness();
-    const token = await mintAccessToken(h.fd.config, h.keys, GRANT, { email: "person@example.com", tenant: "t-1" });
+    const token = await mintAccessToken(h.fd.config, await signer(h), GRANT, { email: "person@example.com", tenant: "t-1" });
     assert.equal(decodeJwt(token).email, "person@example.com");
     for (const name of ["iss", "sub", "aud", "exp", "iat", "nbf", "jti", "scope", "client_id"]) {
-      await assert.rejects(mintAccessToken(h.fd.config, h.keys, GRANT, { [name]: "x" }), TypeError, name);
+      await assert.rejects(mintAccessToken(h.fd.config, await signer(h), GRANT, { [name]: "x" }), TypeError, name);
     }
   });
 
-  it("refuses no scope or a scope the resource does not define, and a missing key", async () => {
+  it("refuses no scope or a scope the resource does not define", async () => {
     const h = await harness();
-    await assert.rejects(mintAccessToken(h.fd.config, h.keys, { ...GRANT, scopes: [] }, {}), TypeError);
-    await assert.rejects(mintAccessToken(h.fd.config, h.keys, { ...GRANT, scopes: ["notes:admin"] }, {}), TypeError);
-    const none: KeyProvider = { signingKey: async () => null, verificationKey: async () => null };
-    await assert.rejects(mintAccessToken(h.fd.config, none, GRANT, {}), NoSigningKeyError);
+    await assert.rejects(mintAccessToken(h.fd.config, await signer(h), { ...GRANT, scopes: [] }, {}), TypeError);
+    await assert.rejects(mintAccessToken(h.fd.config, await signer(h), { ...GRANT, scopes: ["notes:admin"] }, {}), TypeError);
   });
 });
 
@@ -185,7 +186,7 @@ describe("verifyAccessToken refuses hostile input", () => {
 
   it("expires on schedule, with five seconds of tolerance and no more", async () => {
     const h = await harness();
-    const token = await mintAccessToken(h.fd.config, h.keys, GRANT, {});
+    const token = await mintAccessToken(h.fd.config, await signer(h), GRANT, {});
     h.clock.advance(604_000);
     assert.ok(await verifyAccessToken(h.fd.config, h.keys, token));
     h.clock.advance(1_000);
@@ -206,7 +207,7 @@ describe("verifyAccessToken refuses hostile input", () => {
 
   it("a key provider that throws is a refusal, not a crash", async () => {
     const h = await harness();
-    const token = await mintAccessToken(h.fd.config, h.keys, GRANT, {});
+    const token = await mintAccessToken(h.fd.config, await signer(h), GRANT, {});
     const broken: KeyProvider = { signingKey: async () => null, verificationKey: async () => Promise.reject(new Error("down")) };
     assert.equal(await verifyAccessToken(h.fd.config, broken, token), null);
   });

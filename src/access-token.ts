@@ -17,7 +17,7 @@
 import { SignJWT, decodeProtectedHeader, jwtVerify, type JWTPayload } from "jose";
 
 import type { GrantInfo, ResolvedConfig } from "./config.ts";
-import { ACCESS_TOKEN_ALG, type KeyProvider } from "./keys.ts";
+import { ACCESS_TOKEN_ALG, type KeyProvider, type SigningKey } from "./keys.ts";
 
 export const ACCESS_TOKEN_TYP = "at+jwt";
 
@@ -40,16 +40,14 @@ export interface VerifiedAccessToken {
   claims: JWTPayload;
 }
 
-export class NoSigningKeyError extends Error {
-  constructor() {
-    super("No signing key is available: access tokens cannot be minted");
-    this.name = "NoSigningKeyError";
-  }
-}
-
+/**
+ * Sign an access token with `key`, the key the token endpoint fetched once at
+ * the start of the request (so a key that vanishes between that check and the
+ * mint cannot cost a code that was already spent).
+ */
 export async function mintAccessToken(
   config: ResolvedConfig,
-  keys: KeyProvider,
+  key: SigningKey,
   grant: GrantInfo,
   extraClaims: Record<string, unknown>,
 ): Promise<string> {
@@ -59,8 +57,6 @@ export async function mintAccessToken(
   if (grant.scopes.length === 0 || grant.scopes.some((scope) => !config.scopes.includes(scope))) {
     throw new TypeError("Refusing to mint an access token with no scope or an unknown one");
   }
-  const key = await keys.signingKey();
-  if (!key) throw new NoSigningKeyError();
   const now = Math.floor(config.now() / 1000);
   return new SignJWT({ ...extraClaims, client_id: grant.clientId, scope: grant.scopes.join(" ") })
     .setProtectedHeader({ alg: ACCESS_TOKEN_ALG, typ: ACCESS_TOKEN_TYP, kid: key.kid })

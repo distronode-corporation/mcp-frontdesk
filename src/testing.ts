@@ -29,6 +29,7 @@ const CODE: CodeRecord = {
   codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
   scopes: ["notes:read"],
   context: { tenant: "t-1" },
+  authorizedAt: Date.UTC(2029, 11, 31, 23, 59),
   expiresAt: Date.UTC(2030, 0, 1),
 };
 
@@ -197,8 +198,7 @@ export function grantStoreContract(makeStore: Factory<GrantStore>): ContractCase
         await store.insert(row);
         const next = grantRow(family);
         await Promise.all([store.rotate(row.id, T0, next), store.revokeFamily(family, T0)]);
-        // The grant logic re-revokes after a "revoked" outcome; a second pass must settle the family.
-        await store.revokeFamily(family, T0);
+        // One revokeFamily, no second pass: it must catch a successor the racing rotation inserted.
         for (const r of [row, next]) {
           const found = await store.findByTokenHash(r.tokenHash);
           ok(found === null || found.revokedAt !== null, "a row of a revoked family stayed live");
