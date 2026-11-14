@@ -1,0 +1,11 @@
+# zizmor configuration. Read for local runs and for the organization's advisory run, which
+# audits this repository as a remote input and finds this file at `.github/zizmor.yml`.
+rules:
+  dangerous-triggers:
+    ignore:
+      # public-hygiene.yml needs `issue_comment` (and the other comment and review triggers)
+      # because its job is to check that text. It is not the usual unsafe shape: the workflow
+      # sets `permissions: {}`, and its one job only calls the organization's reusable check,
+      # pinned by commit, which checks out none of this repository's code and runs nothing
+      # from it. It reads the thread's text through the API. Only this file is exempt.
+      - public-hygiene.yml
