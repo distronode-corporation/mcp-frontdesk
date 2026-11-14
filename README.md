@@ -12,7 +12,8 @@ S256, and refresh tokens rotate on every use.
   test suite (`mcp-frontdesk/testing`) checks yours.
 - No product defaults. You configure every URL, scope, client host and redirect URI.
 
-It is extracted from the OAuth server behind Distronode's District AI connector for Claude.
+mcp-frontdesk began as the sign-in layer of Distronode's own MCP server, the one behind the
+District AI connector for Claude. We pulled it out so any MCP server can run its own authorization.
 
 > **Status: 0.1.0.** The API may still change before 1.0. Read [SECURITY-MODEL.md](SECURITY-MODEL.md)
 > before you put it in front of real accounts.
