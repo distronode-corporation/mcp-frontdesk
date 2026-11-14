@@ -3,9 +3,12 @@
 rules:
   dangerous-triggers:
     ignore:
-      # public-hygiene.yml needs `issue_comment` (and the other comment and review triggers)
-      # because its job is to check that text. It is not the usual unsafe shape: the workflow
-      # sets `permissions: {}`, and its one job only calls the organization's reusable check,
-      # pinned by commit, which checks out none of this repository's code and runs nothing
-      # from it. It reads the thread's text through the API. Only this file is exempt.
-      - public-hygiene.yml
+      # public-hygiene.yml line 17 is its `issue_comment` trigger, which it needs: its job is to
+      # check comment text. The workflow's top-level permissions are `{}`; its one job is granted
+      # issues, pull-requests and discussions write (to keep the check's one comment on the
+      # thread) and security-events write (the SARIF upload), and passes them only to the
+      # organization's reusable check, pinned by commit. That check checks out its own
+      # repository at that commit and nothing of this one, runs nothing from this repository,
+      # and reads the thread's text through the API. Only that one finding is exempt: any other
+      # dangerous trigger, in this file or any other, is still reported.
+      - public-hygiene.yml:17
