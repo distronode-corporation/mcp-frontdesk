@@ -23,7 +23,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
-        node: [22, 24]
+        # 22.18 is the floor `engines` names (the first Node 22 that strips types by
+        # default); 22 and 24 are the latest of each line. 3 systems x 3 = 9 jobs.
+        node: ["22.18", 22, 24]
     steps:
       - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
