@@ -39,7 +39,16 @@ const unique = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(coun
 /** What the token endpoint passes to `take`: the family the redemption will start, and how long to remember it. */
 const spent = (familyId = unique("fam")) => ({ familyId, ttlSeconds: 600 });
 
-export function codeStoreContract(makeStore: Factory<CodeStore>): ContractCase[] {
+export interface CodeStoreContractOptions {
+  /**
+   * Waits `ms` milliseconds; defaults to a real timer. A store on a clock the
+   * test controls passes a `sleep` that moves that clock instead.
+   */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export function codeStoreContract(makeStore: Factory<CodeStore>, options: CodeStoreContractOptions = {}): ContractCase[] {
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   return [
     {
       name: "code store: take returns what put stored, once",
@@ -91,6 +100,20 @@ export function codeStoreContract(makeStore: Factory<CodeStore>): ContractCase[]
         strictEqual(await store.markReplayed(hash), family);
         strictEqual(await store.wasReplayed(hash), true);
         strictEqual(await store.markReplayed(hash), family, "a second replay names the same family");
+      },
+    },
+    {
+      name: "code store: a tombstone lasts at least the ttlSeconds take was given",
+      async run() {
+        const store = await makeStore();
+        const hash = unique("code");
+        const family = unique("fam");
+        await store.put(hash, CODE, 60);
+        await store.take(hash, { familyId: family, ttlSeconds: 1 });
+        // Most of its one second gone: it must still name the family.
+        await sleep(900);
+        strictEqual(await store.wasReplayed(hash), false, "nothing replayed it yet");
+        strictEqual(await store.markReplayed(hash), family, "the store forgot the spent code before its lifetime ended");
       },
     },
     {

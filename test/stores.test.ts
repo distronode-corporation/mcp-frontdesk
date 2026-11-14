@@ -7,8 +7,19 @@ import { codeStoreContract, grantStoreContract } from "../src/testing.ts";
 import { clock } from "./helpers.ts";
 
 describe("the store contract suite, against the in-memory stores", () => {
-  for (const c of codeStoreContract(() => new MemoryCodeStore())) it(c.name, c.run);
+  // One clock for every code store in the suite, moved by the suite's `sleep`.
+  const time = clock();
+  for (const c of codeStoreContract(() => new MemoryCodeStore({ now: time.now }), { sleep: async (ms) => time.advance(ms) })) it(c.name, c.run);
   for (const c of grantStoreContract(() => new MemoryGrantStore())) it(c.name, c.run);
+});
+
+describe("the contract suite's tombstone lifetime case", () => {
+  it("waits on the wall clock by default", async () => {
+    const lifetime = codeStoreContract(() => new MemoryCodeStore()).find((c) => c.name.includes("lasts at least"))!;
+    const started = Date.now();
+    await lifetime.run();
+    assert.ok(Date.now() - started >= 900, "the default sleep is real time");
+  });
 });
 
 describe("the contract suite catches broken stores", () => {
@@ -105,6 +116,20 @@ describe("the contract suite catches broken stores", () => {
   it("a take that leaves no tombstone fails the tombstone case", async () => {
     const tombstone = codeStoreContract(() => new ForgetfulCodeStore()).find((c) => c.name.includes("leaves a tombstone"))!;
     await assert.rejects(tombstone.run());
+  });
+
+  it("a store that forgets a tombstone before its lifetime fails the lifetime case", async () => {
+    const time = clock();
+    /** Keeps each tombstone for half the lifetime it was given. */
+    class ShortLivedCodeStore extends MemoryCodeStore {
+      override async take(hash: string, spent: SpentCode) {
+        return super.take(hash, { ...spent, ttlSeconds: spent.ttlSeconds / 2 });
+      }
+    }
+    const lifetime = codeStoreContract(() => new ShortLivedCodeStore({ now: time.now }), { sleep: async (ms) => time.advance(ms) }).find((c) =>
+      c.name.includes("lasts at least"),
+    )!;
+    await assert.rejects(lifetime.run(), /forgot the spent code before its lifetime/);
   });
 
   it("a take that replaces the tombstone of a spent code fails the replay case", async () => {
