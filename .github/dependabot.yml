@@ -1,12 +1,14 @@
 version: 2
+
+# Every `uses:` in .github/workflows is pinned to a full commit SHA with a `# vX.Y.Z` comment,
+# which is right for supply-chain safety and wrong for noticing a security fix: a pinned SHA
+# never moves on its own. The `github-actions` entry turns each pin into a pull request.
+#
+# `cooldown` holds a version update back until the release is 14 days old, so a compromised
+# publish that is yanked within days never reaches a pull request here. It does not delay
+# SECURITY updates, which Dependabot opens as soon as an advisory lands and never puts in a
+# group (no group here sets `applies-to`), so dependabot-auto-merge.yml never merges one.
 updates:
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 14
-    open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -14,3 +16,55 @@ updates:
     cooldown:
       default-days: 14
     open-pull-requests-limit: 5
+    groups:
+      # One pull request for the routine bumps. A major usually needs a workflow edit.
+      actions-minor:
+        update-types: [minor, patch]
+
+  # The package. Exact pins stay exact: "1.2.3" becomes "1.2.4", never a range.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    ignore:
+      # @types/node follows the oldest Node the package supports (engines: >=22), so code
+      # cannot type-check against an API Node 22 lacks. A new major comes with a deliberate
+      # engines change, not from a bot.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    groups:
+      # Split by dependency type so that a group's type is unambiguous. Only npm-dev-minor
+      # is merged automatically (dependabot-auto-merge.yml).
+      #
+      # TypeScript writes the published dist/, so a person reads every update to it. A
+      # dependency goes into the first group it matches, so this group comes first, and
+      # npm-dev-minor also excludes it in case the order is ever changed.
+      npm-build-tools:
+        patterns: [typescript]
+        update-types: [minor, patch]
+      npm-dev-minor:
+        dependency-type: development
+        update-types: [minor, patch]
+        exclude-patterns: [typescript]
+      # jose, the one runtime dependency: always read by a person.
+      npm-prod-minor:
+        dependency-type: production
+        update-types: [minor, patch]
+
+  # The example server: its own lockfile, never published. Its updates (the MCP SDK above
+  # all) wait for a person, and the end-to-end test in ci.yml runs on each one.
+  - package-ecosystem: npm
+    directory: /examples/basic-server
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    groups:
+      example-minor:
+        update-types: [minor, patch]

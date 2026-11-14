@@ -1,0 +1,104 @@
+name: Supply chain
+
+# The dependency trees of this repository, checked on every pull request and push to main,
+# and weekly through audit.yml (which calls this file):
+#   dependency-review  (pull requests only) what a pull request adds to a dependency tree.
+#   npm-audit          both lockfiles against GitHub's advisory database, through npm.
+#   osv-scanner        both lockfiles against the OSV database.
+# Two lockfiles: the package's own, and the example server's (examples/basic-server), which
+# is never published but is what people copy.
+#
+# The workflows themselves are checked by zizmor in public-hygiene.yml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+# Read-only. No job writes anything back.
+permissions:
+  contents: read
+
+concurrency:
+  # A call from audit.yml runs inside the caller's run, so the caller's event keeps the
+  # two from sharing a group.
+  group: supply-chain-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Fails a pull request that ADDS a dependency (npm or an action) with a known
+  # moderate-or-worse vulnerability, or under a licence this Apache-2.0 project cannot ship.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # GitHub serves dependency review on a private repository only with Advanced Security.
+    # While this repository is private the job reports without blocking; once it is public
+    # the expression is false and a finding fails the run.
+    continue-on-error: ${{ github.event.repository.private }}
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, LGPL-2.1-only, LGPL-2.1-or-later, LGPL-3.0-only, LGPL-3.0-or-later, SSPL-1.0, BUSL-1.1
+
+  npm-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        directory: [., examples/basic-server]
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No package-manager cache: nothing is installed here, and a restored cache is one
+      # more input to a job whose whole output is a security verdict.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      # No `npm ci`, on purpose: `npm audit` reads package-lock.json and posts the resolved
+      # tree to the advisory API, so this job runs no install scripts. The whole tree,
+      # development dependencies included, is in scope: they build what is published.
+      # `--audit-level=high` sets the failure bar; lower findings are still printed.
+      - name: npm audit
+        working-directory: ${{ matrix.directory }}
+        run: npm audit --audit-level=high
+
+  # The binary is the upstream release checked against a pinned SHA-256, not a third-party
+  # action. A version bump changes both lines below: take the digest from the release's
+  # osv-scanner_SHA256SUMS file, and pick a release at least 7 days old.
+  osv-scanner:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      OSV_SCANNER_VERSION: 2.7.0
+      OSV_SCANNER_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+    steps:
+      - uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install OSV-Scanner
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/osv-scanner"
+          curl -fsSL -o "$bin" \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $bin" | sha256sum -c -
+          chmod 0755 "$bin"
+          "$bin" --version
+      # Exits non-zero when any vulnerability is found, at any severity.
+      - name: osv-scanner
+        run: '"$RUNNER_TEMP/osv-scanner" scan source --lockfile package-lock.json --lockfile examples/basic-server/package-lock.json'
