@@ -51,5 +51,15 @@ before 0.1.0.
   `invalid_scope` (RFC 6749 section 6), decided only after the refresh token passed every check.
   It used to be ignored. A scope the server does not define at all is still `invalid_scope` before
   the token is looked up, as before. The grant's scopes, or fewer, still work, and are not narrowed.
+- `maxFamilyLifetimeSeconds` is at most 365 days (`MAX_FAMILY_LIFETIME_SECONDS`); `createFrontdesk`
+  refuses a larger value.
+- `approve` fails closed when a hook throws (the clock included): reported, and answered
+  `{ ok: false, kind: "unavailable" }` with no code minted, instead of the error escaping.
+- The client metadata deadline aborts with a `TimeoutError` reason, and cancels a body still being
+  read even when the host's fetch ignores the signal.
+- `resourcePaths` entries the URL parser cannot read are refused with `FrontdeskConfigError`, not a
+  raw `TypeError`.
+- `codeStoreContract` checks that a tombstone lasts the lifetime `take` gave it, and takes an
+  optional `{ sleep }` for stores on a test-controlled clock.
 - The SSRF guard also refuses 192.88.99.0/24 (the deprecated 6to4 relay anycast block) and
   2001:10::/28 (ORCHIDv1).

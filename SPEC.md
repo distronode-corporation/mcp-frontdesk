@@ -69,7 +69,9 @@ request for `offline_access` alone included). `approve` may narrow them, never w
 ## Client metadata document
 
 - Fetched with `Accept: application/json`; 200 only; `application/json` or `application/*+json`; at
-  most 5 KB; 5 seconds for the whole fetch, the DNS lookup included.
+  most 5 KB; 5 seconds for the whole fetch, the DNS lookup and the body included. When the deadline
+  passes, the fetch's signal aborts with a `TimeoutError` reason and a body still being read is
+  cancelled.
 - Must be a JSON object whose `client_id` equals the URL; no `client_secret` or
   `client_secret_expires_at`; `token_endpoint_auth_method` absent or `none`; a `client_name` of 1 to
   80 characters after trimming with no control characters; 1 to 10 `redirect_uris`, every one on the

@@ -31,6 +31,10 @@ What was decided while building v0.1.0, and why.
   `https.request` takes one; `fetch` needs a separate dispatcher package. So the guarded path uses
   `https.request` with a lookup that answers only the checked addresses, `agent: false`, and no
   redirect handling.
+- **One deadline covers the body too, and it cancels.** When the 5 seconds pass, the signal aborts
+  with a `TimeoutError` reason (so a host's fetch can tell a timeout from a cancel), and a body
+  still being read is cancelled with that reason, even when the host's fetch ignores the signal. A
+  stalled body is let go of instead of holding a read open after the refusal.
 - **The unsafe option is a whole fetch, not a flag.** `unsafeFetchClientMetadata` replaces the guarded
   path with the caller's function, and its name says what it is. There is no environment check and no
   test mode. The package's own tests reach the guarded code through an internal transport seam
@@ -92,6 +96,11 @@ What was decided while building v0.1.0, and why.
   included, runs before `GrantStore.rotate` (or `insert`). A claims hook that throws then costs a
   retry, never the refresh token. A token minted for a rotation that loses
   its race is dropped unsent.
+- **`approve` fails closed on a hook that throws.** A key provider, a store, the clock or the
+  metadata fetch that throws is reported and answered `{ ok: false, kind: "unavailable" }`, with no
+  code minted, as the token endpoint answers a failing hook with a refusal. Misuse of `approve`
+  itself (no subject, scopes outside the request, non-string context) still throws `TypeError`:
+  that is a bug in the host to fix, not a fault to ride out.
 - **The key is checked before anything is spent, once.** A burnt code the server could not turn into
   a token would cost the person a reconnect for the server's own gap. The key fetched for that check
   is the one that signs, so a provider that answers once and then fails cannot burn the code between
@@ -116,6 +125,12 @@ What was decided while building v0.1.0, and why.
   fewer sign-ins can raise it, and one that wants tighter control can lower it. It is counted from
   the exchange, not from consent (`authorizedAt`), because the two differ by at most the code's
   lifetime and the family is what the cap bounds.
+- **`maxFamilyLifetimeSeconds` is at most 365 days, and a larger value is refused at
+  `createFrontdesk`.** Checked like the other lifetimes (a positive integer of seconds), with a
+  ceiling: a family allowed to live longer than a year is not bounded in any useful sense, and an
+  astronomically large value would push the computed end past what a Date can hold, so the family
+  would never end. Refusing is the fail-closed answer; clamping would quietly run a different
+  configuration from the one written.
 - **`isGrantActive` instead of built-in account checks.** The server this was extracted from
   re-checked tenant membership, account verification and a revocation cutoff on every refresh.
   Those are product rules, so the package asks one hook, at the code exchange and every refresh,

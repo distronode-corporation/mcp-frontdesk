@@ -169,7 +169,7 @@ Optional:
 | `ttl.authorizationCode` | 60 s | Code lifetime. |
 | `ttl.accessToken` | 600 s | Access-token lifetime, and its maximum age at verification. |
 | `ttl.refreshToken` | 30 days | Sliding: reset on every rotation, never past the family's end. |
-| `maxFamilyLifetimeSeconds` | 30 days | Absolute: a connection ends this long after its first sign-in, however often it refreshes. The person signs in again. |
+| `maxFamilyLifetimeSeconds` | 30 days | Absolute: a connection ends this long after its first sign-in, however often it refreshes. The person signs in again. At most 365 days; a larger value is refused. |
 | `refreshTokenReuse` | `"revoke-family"` | Or `"refuse"`. See below. |
 | `accessTokenClaims(grant)` | none | Extra claims. Registered claims cannot be set. |
 | `isGrantActive(grant)` | none | Asked at the code exchange and every refresh. False ends the grant. |
@@ -209,7 +209,10 @@ for (const c of grantStoreContract(() => new MyGrantStore())) test(c.name, c.run
 ```
 
 The suite fires concurrent calls, so a take or rotate written as a read followed by a separate write
-fails it. This repository runs it against the in-memory stores on every commit.
+fails it. One case waits most of a second on the wall clock, to check that a spent code's tombstone
+lasts the lifetime it was given; a store on a clock your test controls can pass
+`codeStoreContract(make, { sleep })` with a `sleep` that moves that clock instead. This repository
+runs the suite against the in-memory stores on every commit.
 
 ## Safety properties
 
