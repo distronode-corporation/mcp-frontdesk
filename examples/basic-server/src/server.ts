@@ -130,6 +130,12 @@ export async function startExampleServer(options: ExampleOptions = {}): Promise<
   const origin = `http://127.0.0.1:${port}`;
   const resource = `${origin}/mcp`;
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  // The pages a browser may post the forms from: the same two names the Host check admits.
+  const allowedOrigins = new Set([origin, `http://localhost:${port}`]);
+  const foreignOrigin = (request: Request) => {
+    const requestOrigin = request.headers.get("origin");
+    return requestOrigin !== null && !allowedOrigins.has(requestOrigin);
+  };
 
   // A fresh signing key per run. A real server loads one from its secret store.
   const keys = await keyProviderFromJwk(await generateSigningJwk());
@@ -189,8 +195,7 @@ export async function startExampleServer(options: ExampleOptions = {}): Promise<
 
     // 3. Ask, or act on the answer.
     if (!isPost) return consentPage(check.request, params, session.csrf, session.account);
-    const requestOrigin = request.headers.get("origin");
-    if ((requestOrigin !== null && requestOrigin !== origin) || !sameSecret(form!.get("csrf") ?? "", session.csrf)) {
+    if (foreignOrigin(request) || !sameSecret(form!.get("csrf") ?? "", session.csrf)) {
       return errorPage(403, "This form did not come from this server.");
     }
     if (form!.get("decision") !== "approve") return redirect(frontdesk.denialUrl(check.request));
@@ -206,8 +211,7 @@ export async function startExampleServer(options: ExampleOptions = {}): Promise<
     const form = await readForm(request, FORM_MAX_BYTES);
     const account = DEMO_ACCOUNTS.find((entry) => entry.id === form?.get("account"));
     const next = form?.get("next") ?? "";
-    const requestOrigin = request.headers.get("origin");
-    if (!account || !next.startsWith("/authorize?") || (requestOrigin !== null && requestOrigin !== origin)) {
+    if (!account || !next.startsWith("/authorize?") || foreignOrigin(request)) {
       return errorPage(400, "Sign-in failed.");
     }
     const sid = randomBytes(32).toString("base64url");

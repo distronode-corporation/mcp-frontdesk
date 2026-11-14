@@ -2,8 +2,9 @@
  * The demo's data and tools: a notebook per demo account, in memory, made up.
  *
  * The tools read the person from the verified access token (`authInfo.extra`),
- * so each account sees only its own notes, and `add_note` asks for the
- * `notes:write` scope through the SDK's step-up challenge.
+ * so each account sees only its own notes. Every tool names the scope it needs
+ * (`notes:read` to list or read, `notes:write` to add), and a token without it
+ * gets the SDK's step-up challenge: a write-only grant reads nothing.
  */
 import { McpServer, requireScopes, type AuthInfo } from "@modelcontextprotocol/server";
 import * as z from "zod";
@@ -63,16 +64,21 @@ export function notesServer(notebooks: Notebooks): McpServer {
 
   server.registerTool(
     "list_notes",
-    { description: "List the signed-in person's notes: id and title.", annotations: { readOnlyHint: true } },
+    {
+      description: "List the signed-in person's notes: id and title. Needs the notes:read scope.",
+      annotations: { readOnlyHint: true },
+      scopeChallenge: requireScopes("notes:read"),
+    },
     async (ctx) => text(notebooks.list(ownerOf(ctx.http?.authInfo)).map(({ id, title }) => ({ id, title }))),
   );
 
   server.registerTool(
     "read_note",
     {
-      description: "Read one note by id.",
+      description: "Read one note by id. Needs the notes:read scope.",
       inputSchema: z.object({ id: z.string() }),
       annotations: { readOnlyHint: true },
+      scopeChallenge: requireScopes("notes:read"),
     },
     async ({ id }, ctx) => {
       const note = notebooks.get(ownerOf(ctx.http?.authInfo), id);

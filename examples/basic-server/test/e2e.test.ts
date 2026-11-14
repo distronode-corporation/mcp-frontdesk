@@ -407,6 +407,60 @@ describe("the example server, end to end", () => {
     }
   });
 
+  it("asks a write-only token to step up for the read tools", async () => {
+    const example = await start();
+    try {
+      const d = await discover(example.resource);
+      const writer = await connect(d, "user-1", "notes:write");
+      assert.equal(writer.scope, "notes:write");
+      for (const [tool, args] of [
+        ["list_notes", {}],
+        ["read_note", { id: "note-1" }],
+      ] as const) {
+        answers.length = 0;
+        const refused = callTool(example.resource, writer.access_token, tool, args, "2026-07-28");
+        await assert.rejects(refused, (err: unknown) => err instanceof InsufficientScopeError && err.requiredScope === "notes:read", tool);
+        assert.equal(answers.at(-1)?.status, 403, tool);
+        assert.match(answers.at(-1)?.challenge ?? "", /scope="notes:read"/, tool);
+      }
+      // The write tool still works with the scope it needs.
+      const added = textOf(await callTool(example.resource, writer.access_token, "add_note", { title: "Only", body: "Write." }, "2026-07-28"));
+      assert.equal((added as { title: string }).title, "Only");
+    } finally {
+      await example.close();
+    }
+  });
+
+  it("the sign-in and consent forms accept a page opened at localhost as well as 127.0.0.1, and nothing else", async () => {
+    const example = await start();
+    try {
+      const d = await discover(example.resource);
+      const localhost = example.origin.replace("127.0.0.1", "localhost");
+      const consent = await openConsent(d, "user-1");
+      const signIn = (origin: string) =>
+        fetch(new URL("/signin", example.origin), {
+          ...form({ account: "user-1", next: "/authorize?response_type=code" }),
+          headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: origin },
+          redirect: "manual",
+        });
+      assert.equal((await signIn(localhost)).status, 303);
+      assert.equal((await signIn("http://attacker.example.com")).status, 400);
+
+      const answer = (origin: string, decision: string) =>
+        fetch(d.authorizationEndpoint, {
+          ...form({ ...consent.fields, decision }),
+          headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: consent.cookie, Origin: origin },
+          redirect: "manual",
+        });
+      assert.equal((await answer("http://attacker.example.com", "approve")).status, 403);
+      const approved = await answer(localhost, "approve");
+      assert.equal(approved.status, 302);
+      assert.ok(new URL(approved.headers.get("location")!).searchParams.get("code"));
+    } finally {
+      await example.close();
+    }
+  });
+
   it("the official SDK client's own OAuth flow: discovery, the metadata document, PKCE, state, iss, and a refresh on expiry", async () => {
     const time = clock();
     const example = await start({ now: time.now });
