@@ -8,7 +8,11 @@ trim_trailing_whitespace = true
 indent_style = space
 indent_size = 2
 
+# Markdown indents by its syntax, not a fixed step: a numbered item's continuation lines line up
+# under its text (three spaces after "1. "), and the diagrams in code blocks are drawn to the
+# column. Still spaces only.
 [*.md]
+indent_size = unset
 trim_trailing_whitespace = false
 
 [LICENSE]

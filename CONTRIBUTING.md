@@ -22,7 +22,7 @@ Node.js 22.18 or later (the tests run the TypeScript sources with Node's type st
 npm ci
 npm run lint
 npm run typecheck
-npm run test:coverage   # 100% lines, branches and functions on src/, enforced
+npm run test:coverage   # 100% lines, statements, functions and branches in every src/ file, enforced
 npm pack --dry-run
 
 # The example server and its end-to-end test, against the build above
@@ -34,9 +34,13 @@ cd examples/basic-server && npm ci && npm run typecheck && npm test
 
 Code follows oxlint's `correctness` rules (oxlint's own rules and its ports of the ESLint,
 typescript-eslint and unicorn rules, for code that is outright wrong), configured in `.oxlintrc.json`, and TypeScript's
-`strict` mode with the extra checks in `tsconfig.json`. Formatting follows `.editorconfig`. CI
-runs `npm run lint` (warnings fail it too) and `npm run typecheck` in every test job, and a pull
-request that fails either does not merge. A rule is never switched off for one line to make a
+`strict` mode with the extra checks in `tsconfig.json` (unused locals and parameters included; prefix
+a parameter an interface makes you take with `_`). Formatting follows `.editorconfig`, and CI checks
+every tracked file against it with
+[editorconfig-checker](https://github.com/editorconfig-checker/editorconfig-checker) (run it with
+no arguments from the repository root to check locally). CI runs `npm run lint` (warnings fail it
+too), the EditorConfig check and `npm run typecheck` in the test jobs, and a pull request that fails
+any of them does not merge. A rule is never switched off for one line to make a
 change pass; fix the code, or argue for changing the config in the pull request.
 
 ## Tests
@@ -44,6 +48,11 @@ change pass; fix the code, or argue for changing the config in the pull request.
 - A pull request that adds or changes functionality adds tests for it to the automated suite, and
   a bug fix adds a test that fails without the fix. The 100% coverage floor makes the first half
   hard to skip; the second half is on the reviewer.
+- Coverage is held at 100% for each file on its own (`c8`, configured in `.c8rc.json`), so a file
+  no test loads fails it. There are no coverage-ignore comments and no excluded source files: a
+  branch no test can reach is dead code, and is deleted.
+- No test waits on the wall clock for its outcome. Use mock timers (`t.mock.timers`) or wait for
+  the event itself; at 100% there is no margin for a run that is slow.
 - The tests run with `--throw-deprecation`, so a call to a deprecated Node.js API fails them.
 - A flaky test is a bug. Fix the cause; do not add retries or loosen assertions.
 - Tests never touch the network: client metadata comes from an injected fetch or a local server.

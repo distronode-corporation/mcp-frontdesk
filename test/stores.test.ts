@@ -14,11 +14,28 @@ describe("the store contract suite, against the in-memory stores", () => {
 });
 
 describe("the contract suite's tombstone lifetime case", () => {
-  it("waits on the wall clock by default", async () => {
+  it("sleeps on a real timer by default, for the whole 900 ms", async (t) => {
+    // Date too: the store's default clock then moves with the timer, not with the machine.
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
     const lifetime = codeStoreContract(() => new MemoryCodeStore()).find((c) => c.name.includes("lasts at least"))!;
-    const started = Date.now();
-    await lifetime.run();
-    assert.ok(Date.now() - started >= 900, "the default sleep is real time");
+    let finished = false;
+    const run = lifetime.run().then(() => {
+      finished = true;
+    });
+    // The store is in memory, so one turn of the event loop brings the case to its sleep.
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(899);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(finished, false, "the default sleep ended before 900 ms");
+    t.mock.timers.tick(1);
+    await run;
+    assert.equal(finished, true);
+  });
+});
+
+describe("stores.ts", () => {
+  it("holds the storage contracts as types alone: nothing of it exists at run time", async () => {
+    assert.deepEqual(Object.keys(await import("../src/stores.ts")), []);
   });
 });
 
@@ -64,7 +81,7 @@ describe("the contract suite catches broken stores", () => {
 
   /** A rotate that checks, yields, then writes. */
   class RacyGrantStore extends MemoryGrantStore implements GrantStore {
-    override async rotate(id: string, now: Date, successor: NewGrant) {
+    override async rotate(id: string, _now: Date, successor: NewGrant) {
       await new Promise((resolve) => setImmediate(resolve));
       const rows = await this.findAll(id);
       if (!rows) return "revoked" as const;

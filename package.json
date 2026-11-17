@@ -53,7 +53,7 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint": "oxlint --deny-warnings",
     "test": "node --test --throw-deprecation --test-reporter=spec \"test/**/*.test.ts\"",
-    "test:coverage": "node --test --throw-deprecation --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-lines=100 --test-coverage-branches=100 --test-coverage-functions=100 \"test/**/*.test.ts\"",
+    "test:coverage": "c8 node --test --throw-deprecation --test-reporter=spec \"test/**/*.test.ts\"",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -61,7 +61,14 @@
   },
   "devDependencies": {
     "@types/node": "22.20.5",
+    "c8": "12.0.0",
     "oxlint": "1.90.0",
     "typescript": "7.0.2"
+  },
+  "overrides": {
+    "test-exclude": {
+      "glob": "14.0.3",
+      "minimatch": "11.0.3"
+    }
   }
 }

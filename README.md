@@ -147,25 +147,38 @@ stopping for good.
 
 Every release is published to npm from this repository's `release.yml` on a `vX.Y.Z` tag, with
 npm trusted publishing: no npm token exists, and npm attaches a Sigstore provenance attestation
-that names the repository, the workflow and the commit. To check the copy you installed:
+that names the repository, the workflow and the commit. To check the copy you installed, run this
+in the project that installed it:
 
 ```sh
 npm audit signatures
 ```
 
-It should report `verified registry signatures` (the registry's keys are at
-<https://registry.npmjs.org/-/npm/v1/keys>) and `verified attestations` for mcp-frontdesk. The
-attestation is also shown on the package's npm page, under Provenance.
+It should count mcp-frontdesk among the packages that `have verified registry signatures` (the
+registry's keys are at <https://registry.npmjs.org/-/npm/v1/keys>) and `have verified
+attestations`, and report nothing invalid; `npm audit signatures --json --include-attestations`
+shows its entry under `verified`, with the provenance. The attestation is also shown on the
+package's npm page, under Provenance.
 
-The package is reproducible: building the tagged commit gives the same tarball, byte for byte,
-as the one on npm. CI packs the package twice and compares the two. To check a release yourself:
+The package is reproducible: building the tagged commit gives the same files, byte for byte, as
+the package on npm. CI packs the package twice and compares the two. Compare the files, not the
+`.tgz` checksum (`dist.shasum`): the tarball is gzip-compressed, and the compressed bytes depend on
+the zlib your Node.js was built with, so the same files can give another checksum. To check a
+release yourself, on any system:
 
 ```sh
-git clone https://github.com/distronode-corporation/mcp-frontdesk.git
-cd mcp-frontdesk && git checkout v0.1.0
-npm ci && npm pack
-npm view mcp-frontdesk@0.1.0 dist.shasum   # equals: sha1sum mcp-frontdesk-0.1.0.tgz
+git clone -c core.autocrlf=false https://github.com/distronode-corporation/mcp-frontdesk.git
+cd mcp-frontdesk
+git checkout v0.1.0
+npm ci
+npm pack
+npm diff --diff=mcp-frontdesk@0.1.0 --diff=./mcp-frontdesk-0.1.0.tgz
 ```
+
+`npm pack` builds `dist/` from the tagged sources, and `npm diff` compares every file in the
+package on npm with the one you built: it prints no diff when they are the same, and a diff for
+any file that differs, is missing or was added. `core.autocrlf=false` keeps Git on Windows from
+checking files out with CRLF line endings, which would make every text file differ.
 
 ## What it serves
 
@@ -382,6 +395,14 @@ its own block. The shape of this entry may change in a minor release.
 - No sign-in, sessions or consent UI.
 
 The full list, with the RFCs and the specification version, is in [SPEC.md](SPEC.md).
+
+## Reporting bugs
+
+Open an issue at <https://github.com/distronode-corporation/mcp-frontdesk/issues> with the
+mcp-frontdesk and Node.js versions, what you did, what happened and what you expected; a small
+reproduction helps most. Use synthetic values only (`example.com`, `user-1`), never a real token,
+key or host. A security problem is not a bug report: report it privately, through GitHub's private
+vulnerability reporting as [SECURITY.md](SECURITY.md) describes, never in a public issue.
 
 ## Security
 

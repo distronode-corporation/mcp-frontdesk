@@ -19,11 +19,18 @@ What was decided while building v0.1.0, and why.
 - **`jose`, pinned exactly, and nothing else at runtime.** It does the JWT work. `zod` was not added:
   the config and request checks are small and hand-written, and a schema library would be the
   package's largest dependency.
-- **Development: `typescript` and `@types/node` only.** Tests use `node:test` and Node's built-in
-  coverage, and run the TypeScript sources directly (Node 22.18 or later strips types). The published
-  package is compiled JavaScript with declarations, but `engines` still says `>=22.18`: that is the
-  oldest Node the CI runs the package on, and a range that names versions no test ever ran would be
-  a claim nobody checked.
+- **Development: `typescript`, `@types/node`, `oxlint` and `c8`.** Tests use `node:test` and run the
+  TypeScript sources directly (Node 22.18 or later strips types). The published package is compiled
+  JavaScript with declarations, but `engines` still says `>=22.18`: that is the oldest Node the CI
+  runs the package on, and a range that names versions no test ever ran would be a claim nobody
+  checked.
+- **Coverage through `c8`, not Node's built-in coverage.** Both read the same V8 coverage, but
+  Node's thresholds apply to the total of all files, it has no statements figure, and it leaves
+  out a file no test loads. `c8` holds every file in `src/` to 100% lines, statements, functions
+  and branches on its own (`.c8rc.json`), a file no test loads included. Its file matching
+  (`test-exclude`) is held by an `overrides` entry to `glob` and `minimatch` releases with the fixes
+  for GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249, which the ranges it asks for do not reach; it
+  uses only their `glob()`, `glob.sync()` and `minimatch()` calls, unchanged in those majors.
 
 ## The client metadata fetch
 
