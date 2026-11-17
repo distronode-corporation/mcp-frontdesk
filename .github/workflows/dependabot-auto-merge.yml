@@ -63,7 +63,7 @@ jobs:
           !(steps.metadata.outputs.dependency-group == 'npm-dev-minor' &&
             steps.metadata.outputs.dependency-type == 'direct:development' &&
             (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-             steps.metadata.outputs.update-type == 'version-update:semver-minor'))
+              steps.metadata.outputs.update-type == 'version-update:semver-minor'))
         env:
           GROUP: ${{ steps.metadata.outputs.dependency-group }}
           DEP_TYPE: ${{ steps.metadata.outputs.dependency-type }}
@@ -82,7 +82,7 @@ jobs:
           steps.metadata.outputs.dependency-group == 'npm-dev-minor' &&
           steps.metadata.outputs.dependency-type == 'direct:development' &&
           (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-           steps.metadata.outputs.update-type == 'version-update:semver-minor')
+            steps.metadata.outputs.update-type == 'version-update:semver-minor')
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -108,7 +108,7 @@ jobs:
           steps.metadata.outputs.dependency-group == 'npm-dev-minor' &&
           steps.metadata.outputs.dependency-type == 'direct:development' &&
           (steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-           steps.metadata.outputs.update-type == 'version-update:semver-minor')
+            steps.metadata.outputs.update-type == 'version-update:semver-minor')
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

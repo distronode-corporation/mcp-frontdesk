@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The README's check of a release against npm compares the files (`npm diff`) instead of the
+  tarball's SHA-1, which differs between Node.js builds with a different zlib even when every file
+  is the same. The README also says how to report a bug.
+
 ## [0.1.0] - 2026-11-15
 
 ### Added

@@ -41,8 +41,30 @@ jobs:
       # oxlint's correctness rules (.oxlintrc.json), warnings included. In every test job, so it
       # is part of the required checks.
       - run: npm run lint
+      # Every tracked file against .editorconfig: charset, line endings, final newline, trailing
+      # whitespace and indentation. Formatting is the same on every system, so Linux only (a
+      # Windows checkout may have CRLF line endings). The binary is the upstream release checked
+      # against a pinned SHA-256, as osv-scanner is in supply-chain.yml; a version bump changes
+      # both lines, with the digest from the release's checksums.txt.
+      - name: EditorConfig
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        env:
+          EC_VERSION: 4.0.2
+          EC_SHA256: 44efaef3ed14c6ab52eb87481d78e5e5c204796dccf26e2f4598a61ba17f8003
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/editorconfig-checker.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${EC_VERSION}/editorconfig-checker-linux-amd64.tar.gz"
+          echo "${EC_SHA256}  $archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/editorconfig-checker"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/editorconfig-checker" editorconfig-checker
+          "$RUNNER_TEMP/editorconfig-checker/editorconfig-checker" --version
+          "$RUNNER_TEMP/editorconfig-checker/editorconfig-checker" -format github-actions
       - run: npm run typecheck
-      # 100% lines, branches and functions on src/, enforced by the script's thresholds.
+      # 100% lines, statements, functions and branches in every file under src/, each file on
+      # its own (c8, configured in .c8rc.json). A file no test loads counts, at 0%.
       - run: npm run test:coverage
       - run: npm run build
       # The published tarball holds dist/ and the documents in package.json "files", nothing else.
@@ -60,7 +82,7 @@ jobs:
           '
       # The package is reproducible: two packs of this commit (prepack rebuilds dist/ from a
       # clean tree each time) give the same tarball, byte for byte. One system is enough; the
-      # README says how to compare a release with the tarball on npm.
+      # README says how to compare a release's files with the package on npm.
       - name: Reproducible package
         if: matrix.os == 'ubuntu-24.04'
         shell: bash
