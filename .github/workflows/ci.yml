@@ -38,6 +38,9 @@ jobs:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
       - run: npm ci
+      # oxlint's correctness rules (.oxlintrc.json), warnings included. In every test job, so it
+      # is part of the required checks.
+      - run: npm run lint
       - run: npm run typecheck
       # 100% lines, branches and functions on src/, enforced by the script's thresholds.
       - run: npm run test:coverage
@@ -55,6 +58,25 @@ jobs:
             if (bad.length) { console.error("unexpected files in the package:", bad); process.exit(1); }
             console.log(pack.files.length + " files, " + pack.size + " bytes");
           '
+      # The package is reproducible: two packs of this commit (prepack rebuilds dist/ from a
+      # clean tree each time) give the same tarball, byte for byte. One system is enough; the
+      # README says how to compare a release with the tarball on npm.
+      - name: Reproducible package
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pack-1" "$RUNNER_TEMP/pack-2"
+          npm pack --silent --pack-destination "$RUNNER_TEMP/pack-1" > /dev/null
+          npm pack --silent --pack-destination "$RUNNER_TEMP/pack-2" > /dev/null
+          one="$(sha256sum "$RUNNER_TEMP"/pack-1/*.tgz | cut -d' ' -f1)"
+          two="$(sha256sum "$RUNNER_TEMP"/pack-2/*.tgz | cut -d' ' -f1)"
+          echo "first pack  $one"
+          echo "second pack $two"
+          if [ "$one" != "$two" ]; then
+            echo "::error::two packs of the same commit differ."
+            exit 1
+          fi
       # The built package resolves through its own exports map.
       - name: Exports smoke test
         run: node -e "Promise.all(['mcp-frontdesk','mcp-frontdesk/experimental','mcp-frontdesk/testing'].map((m) => import(m))).then((ms) => console.log(ms.map((m) => Object.keys(m).length)))"

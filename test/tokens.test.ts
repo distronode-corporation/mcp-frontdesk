@@ -129,12 +129,13 @@ describe("verifyAccessToken refuses hostile input", () => {
   it("accepts the reference token the table below varies, and reports its claims", async () => {
     const h = await harness();
     const verified = await verifyAccessToken(h.fd.config, h.keys, await forge(h, { tenant: "t-1" }));
-    assert.equal(verified?.subject, "user-1");
-    assert.equal(verified?.clientId, GRANT.clientId);
-    assert.deepEqual(verified?.scopes, ["notes:read"]);
-    assert.equal(verified?.tokenId, "j-1");
-    assert.equal(verified?.expiresAt! - verified?.issuedAt!, 600);
-    assert.equal(verified?.claims.tenant, "t-1");
+    assert.ok(verified);
+    assert.equal(verified.subject, "user-1");
+    assert.equal(verified.clientId, GRANT.clientId);
+    assert.deepEqual(verified.scopes, ["notes:read"]);
+    assert.equal(verified.tokenId, "j-1");
+    assert.equal(verified.expiresAt - verified.issuedAt, 600);
+    assert.equal(verified.claims.tenant, "t-1");
   });
 
   const table: [string, Record<string, unknown>, Record<string, unknown>?][] = [

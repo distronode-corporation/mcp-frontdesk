@@ -74,9 +74,10 @@ export function createFence(options: FenceOptions = {}): Fence {
     if (value === null || value === undefined) return null;
     const raw = textOf(value);
     if (raw === null) return null;
-    // C0 controls but tab and newline, DEL, and the C1 controls.
+    // C0 controls but tab, newline and carriage return, DEL, and the C1 controls: \p{Cc} is
+    // exactly U+0000 to U+001F and U+007F to U+009F.
     const cleaned = raw
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, " ")
+      .replace(/(?![\t\n\r])\p{Cc}/gu, " ")
       .replaceAll(token, "[removed]")
       .replace(FENCE_SHAPED, "[removed]")
       .trim();

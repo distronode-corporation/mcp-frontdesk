@@ -1,5 +1,7 @@
 # mcp-frontdesk
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16702/badge)](https://www.bestpractices.dev/projects/16702)
+
 A small OAuth 2.1 authorization server and access-token gate for MCP servers. It signs people
 in to your MCP server the way the
 [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
@@ -19,6 +21,7 @@ District AI connector for Claude. We pulled it out so any MCP server can run its
 > before you put it in front of real accounts.
 
 Contents: [When to use it](#when-to-use-it) · [Quick start](#quick-start) ·
+[Install, uninstall and verify](#install-uninstall-and-verify) ·
 [What it serves](#what-it-serves) · [Configuration](#configuration) · [Storage](#storage) ·
 [Safety properties](#safety-properties) · [What a RateLimiter protects](#what-is-not-protected-without-a-ratelimiter) ·
 [Example server](#example-server) · [Experimental: fencing untrusted text](#experimental-fencing-untrusted-text) ·
@@ -127,6 +130,41 @@ To make a key for development:
 ```ts
 import { generateSigningJwk } from "mcp-frontdesk";
 const signingJwk = await generateSigningJwk(); // store it as a secret; never commit it
+```
+
+## Install, uninstall and verify
+
+mcp-frontdesk is a library: `npm install mcp-frontdesk` adds it to your project, in the
+`node_modules` your package manager chooses, and nothing else is installed. To remove it:
+
+```sh
+npm uninstall mcp-frontdesk
+```
+
+Its state is in your stores and your key provider, so removing the package removes nothing of
+yours. Revoke what it issued in your own `GrantStore` and retire the signing key if you are
+stopping for good.
+
+Every release is published to npm from this repository's `release.yml` on a `vX.Y.Z` tag, with
+npm trusted publishing: no npm token exists, and npm attaches a Sigstore provenance attestation
+that names the repository, the workflow and the commit. To check the copy you installed:
+
+```sh
+npm audit signatures
+```
+
+It should report `verified registry signatures` (the registry's keys are at
+<https://registry.npmjs.org/-/npm/v1/keys>) and `verified attestations` for mcp-frontdesk. The
+attestation is also shown on the package's npm page, under Provenance.
+
+The package is reproducible: building the tagged commit gives the same tarball, byte for byte,
+as the one on npm. CI packs the package twice and compares the two. To check a release yourself:
+
+```sh
+git clone https://github.com/distronode-corporation/mcp-frontdesk.git
+cd mcp-frontdesk && git checkout v0.1.0
+npm ci && npm pack
+npm view mcp-frontdesk@0.1.0 dist.shasum   # equals: sha1sum mcp-frontdesk-0.1.0.tgz
 ```
 
 ## What it serves

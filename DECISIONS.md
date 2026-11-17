@@ -81,8 +81,8 @@ What was decided while building v0.1.0, and why.
   have been optional (revoke when the store supports it). That would make the protection silently
   absent for exactly the hosts that wrote their own store before it existed, and nothing would ever
   say so. `createFrontdesk` instead throws `FrontdeskConfigError` when `markReplayed` or
-  `wasReplayed` is missing, and the contract suite checks that they work. The package is not yet
-  published, so no adopter is broken by the requirement. At run time the check fails closed too: a
+  `wasReplayed` is missing, and the contract suite checks that they work. The package was not yet
+  published when this was decided, so no adopter was broken by the requirement. At run time the check fails closed too: a
   `markReplayed` that throws is the same `invalid_grant` (reported), and a `wasReplayed` that throws
   revokes the new family and refuses.
 - **A removed scope narrows a grant; it does not end it.** When the config drops a scope, a refresh

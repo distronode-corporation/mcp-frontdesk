@@ -20,6 +20,7 @@ Node.js 22.18 or later (the tests run the TypeScript sources with Node's type st
 
 ```sh
 npm ci
+npm run lint
 npm run typecheck
 npm run test:coverage   # 100% lines, branches and functions on src/, enforced
 npm pack --dry-run
@@ -29,6 +30,21 @@ npm run build
 cd examples/basic-server && npm ci && npm run typecheck && npm test
 ```
 
+## Style
+
+Code follows oxlint's `correctness` rules (oxlint's own rules and its ports of the ESLint,
+typescript-eslint and unicorn rules, for code that is outright wrong), configured in `.oxlintrc.json`, and TypeScript's
+`strict` mode with the extra checks in `tsconfig.json`. Formatting follows `.editorconfig`. CI
+runs `npm run lint` (warnings fail it too) and `npm run typecheck` in every test job, and a pull
+request that fails either does not merge. A rule is never switched off for one line to make a
+change pass; fix the code, or argue for changing the config in the pull request.
+
+## Tests
+
+- A pull request that adds or changes functionality adds tests for it to the automated suite, and
+  a bug fix adds a test that fails without the fix. The 100% coverage floor makes the first half
+  hard to skip; the second half is on the reviewer.
+- The tests run with `--throw-deprecation`, so a call to a deprecated Node.js API fails them.
 - A flaky test is a bug. Fix the cause; do not add retries or loosen assertions.
 - Tests never touch the network: client metadata comes from an injected fetch or a local server.
 
@@ -39,7 +55,18 @@ cd examples/basic-server && npm ci && npm run typecheck && npm test
   real hosts, account ids, tokens or keys.
 - Security issues go through private vulnerability reporting (see `SECURITY.md`), not public issues.
 
-By contributing, you agree that your contributions are licensed under the Apache License 2.0.
+## Commits and pull requests
+
+There is no Developer Certificate of Origin sign-off requirement. By opening a pull
+request you agree that your contribution is licensed under the Apache License, Version
+2.0, as section 5 of that licence describes.
+
+Documentation moves with the code: a pull request that changes behaviour changes the README,
+`SPEC.md` or `SECURITY-MODEL.md` that describes it in the same pull request. A known mismatch
+between the docs and the code is a bug; open an issue for it.
+
+The project's roles, and how a change is accepted, are in the organization's
+[GOVERNANCE.md](https://github.com/distronode-corporation/.github/blob/main/GOVERNANCE.md).
 
 ## Code of conduct
 
