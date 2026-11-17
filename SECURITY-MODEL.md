@@ -13,6 +13,21 @@ protects, what it trusts, and where its guarantees stop. The protocol details ar
 - **Your server's network position.** The client metadata fetch is an outbound request whose URL a
   stranger chooses.
 
+## Threat model
+
+Who can do what, and which part of this package stands in their way:
+
+| Actor | What they can do | What stops them |
+|---|---|---|
+| Anyone on the network | Send any request to every endpoint, any number of times. | Every input is checked before use; the token endpoint never says why it refused; a `rateLimiter` if the host passes one. |
+| A malicious MCP client | Pick any `client_id` URL, any redirect URI, any scopes and parameters. | Only configured client hosts are fetched; every redirect URI must be on the host's allowlist; PKCE S256 is mandatory. |
+| A malicious client metadata document | Point at internal addresses, redirect, stall, grow without end, or claim another client's name. | The SSRF guard, the pinned GET, the deadline and the 5 KB cap; `clientName` is always shown beside the host that vouches for it. |
+| A thief of a code or a refresh token | Present it, once or many times, from another client. | Codes are single use and bound to the client, the redirect and the PKCE challenge; a replay revokes what the code issued; refresh tokens rotate and a reuse revokes the family. |
+| A thief of an access token | Call the MCP server until it expires. | One audience, `resourcePaths`, a short lifetime (10 minutes by default) and a maximum age whatever `exp` says. |
+
+Out of scope: a compromised host application, config, store or signing key, which are trusted
+(below), and everything listed under [What it does not protect](#what-it-does-not-protect).
+
 ## Trust boundaries
 
 | Party | Trusted? | Why |
@@ -99,6 +114,45 @@ is reuse first, so under `"refuse"` it is only refused, whoever presents it.
   with the new key and pass the old public key as `previous` for one access-token lifetime.
 - **The unsafe fetch option.** `clientMetadata.unsafeFetchClientMetadata` turns the SSRF guard off.
 - **Prompt injection.** The experimental fencing helpers narrow it; they cannot prevent it.
+
+## Secure design principles applied
+
+- **Least privilege.** A token carries the scopes the person approved and no more, one audience,
+  and only the `resourcePaths` it may be used on (`access-token.ts`, `gate.ts`). No email or other
+  personal data goes into a token unless the host adds it. Stores see hashes, never codes or
+  refresh tokens (`encoding.ts`, `stores.ts`).
+- **Fail closed.** A store, key provider, rate limiter or hook that throws is a refusal,
+  never a token or a code (`token-endpoint.ts`, `authorize.ts`; tests under "hooks that fail never
+  change an answer" in `test/token-endpoint.test.ts`). A config that cannot work, or a code store
+  without the tombstone, is refused at `createFrontdesk` (`config.ts`).
+- **Complete mediation.** `approve` checks the whole authorization request again instead of
+  trusting the consent page's earlier check. Every refresh asks `isGrantActive`, and every MCP
+  request goes through `authenticate`, which checks the signature and every claim.
+- **Economy of mechanism.** One runtime dependency (`jose`), one algorithm (ES256), public
+  clients only, no dynamic registration, JWKS, introspection or extra grants
+  ([SPEC.md](SPEC.md#deliberately-absent)). The config and request checks are small hand-written
+  functions rather than a schema library ([DECISIONS.md](DECISIONS.md#dependencies)).
+- **Safe defaults.** The secure choice is the default: the SSRF guard on, refresh reuse revokes
+  the family, loopback redirects off, no product presets unless spread in.
+
+## Common weaknesses countered
+
+Mapped to the CWE Top 25 and the OWASP Top 10. Each line names the mechanism and the tests that pin it.
+
+| Weakness | How it is countered | Tests |
+|---|---|---|
+| Server-side request forgery (CWE-918, OWASP A10) | `ssrf.ts` refuses internal names and every private, loopback, link-local, shared and reserved range (IPv6 forms that embed one included); `pinned-get.ts` connects only to the checked addresses and follows no redirect. | `test/ssrf.test.ts`, `test/pinned-get.test.ts`, `test/client-metadata.test.ts` |
+| Improper input validation (CWE-20) | The config is checked once by `resolveConfig`; authorization and token requests are checked parameter by parameter, a repeated parameter is refused, and a client metadata document is validated field by field. | `test/config-discovery.test.ts`, `test/authorize.test.ts`, `test/token-endpoint.test.ts`, `test/client-metadata.test.ts` |
+| Uncontrolled resource consumption (CWE-400) | Streaming caps on the token request (8 KB) and the metadata document (5 KB); one 5 second deadline on the metadata fetch. | `test/primitives.test.ts` (readCapped), `test/client-metadata.test.ts` |
+| Open redirect (CWE-601) | No redirect until the client and its exact redirect URI are verified; before that the host shows a page. | `test/authorize.test.ts` ("client and redirect failures are pages, never redirects") |
+| Improper authentication and token misuse (CWE-287, CWE-294, OWASP A07) | PKCE S256 only; single-use codes with replay revocation; refresh rotation with reuse detection; access tokens verified with the algorithm, `typ`, kid, issuer, one audience and a maximum age pinned. | `test/token-endpoint.test.ts`, `test/tokens.test.ts`, `test/gate.test.ts` |
+| Information exposure (CWE-200, CWE-209) | Every refusal of a code or a refresh token is the same `invalid_grant`, the gate does not say which check failed, and reasons go only to the audit sink. | `test/token-endpoint.test.ts`, `test/gate.test.ts` |
+| Storage of secrets in the clear (CWE-312) | Codes and refresh tokens are stored as SHA-256 hashes; the audit events carry ids and reasons, never a code or a token (`config.ts`, `AuditEvent`). | |
+| Insufficient randomness (CWE-330) | Codes and refresh tokens are 256 bits from `crypto.randomBytes` (`encoding.ts`). | `test/primitives.test.ts` |
+| Deserialization of untrusted data (CWE-502) | The only parsed input is JSON (`JSON.parse`, no revivers or class instantiation) and form bodies, both checked field by field before use. | `test/client-metadata.test.ts`, `test/token-endpoint.test.ts` |
+| Race conditions on single-use values (CWE-362) | `CodeStore.take` and `GrantStore.rotate` must be atomic, and the contract suite fires concurrent calls to prove it. | `test/stores.test.ts` |
+| Injection (CWE-74, CWE-79, OWASP A03) | No SQL, shell or HTML is built here: storage is the host's, and responses are JSON or fixed challenge headers built from the host's own config values. | |
+| Path traversal (CWE-22) | Not applicable: the package reads and writes no files. | |
 
 ## Reporting
 

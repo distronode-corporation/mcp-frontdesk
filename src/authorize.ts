@@ -230,7 +230,7 @@ export function createAuthorize(ctx: Context) {
     if (scopes.length === 0 || scopes.some((scope) => !request.scopes.includes(scope))) {
       throw new TypeError("approve scopes must be a non-empty subset of the request's scopes");
     }
-    const context = { ...(input.context ?? {}) };
+    const context = { ...input.context };
     if (Object.values(context).some((value) => typeof value !== "string")) throw new TypeError("approve context values must be strings");
 
     // A server that cannot mint access tokens mints no codes.
