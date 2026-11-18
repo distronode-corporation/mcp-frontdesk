@@ -1,6 +1,25 @@
 # mcp-frontdesk
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16702/badge)](https://www.bestpractices.dev/projects/16702)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/distronode-corporation/mcp-frontdesk/badge)](https://scorecard.dev/viewer/?uri=github.com/distronode-corporation/mcp-frontdesk)
+[![npm](https://img.shields.io/npm/v/mcp-frontdesk)](https://www.npmjs.com/package/mcp-frontdesk)
+[![License: Apache-2.0](https://img.shields.io/github/license/distronode-corporation/mcp-frontdesk)](LICENSE)
+[![CI](https://github.com/distronode-corporation/mcp-frontdesk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/distronode-corporation/mcp-frontdesk/actions/workflows/ci.yml)
+
+**Be your own authorization server for MCP: sign-in, PKCE, tokens and the bearer gate, on Web `Request` and `Response`.**
+
+```sh
+npm install mcp-frontdesk
+# const frontdesk = createFrontdesk({ issuer, resource, scopes, keys, codeStore, grantStore, ... })
+# then route discovery and /token to it, and gate /mcp with frontdesk.authenticate(request)
+```
+
+The full version is the [Quick start](#quick-start); a runnable server is in [examples/basic-server](#example-server).
+
+![The example server: npm start, an MCP request with no token gets the 401 challenge, and the end-to-end test passes](docs/images/hero.png)
+
+Made by [Distronode](https://distronode.com). More open source from us:
+[github.com/distronode-corporation](https://github.com/distronode-corporation).
 
 A small OAuth 2.1 authorization server and access-token gate for MCP servers. It signs people
 in to your MCP server the way the
