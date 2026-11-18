@@ -406,11 +406,11 @@ vulnerability reporting as [SECURITY.md](SECURITY.md) describes, never in a publ
 
 ## The project
 
-How to build, test and propose a change is in [CONTRIBUTING.md](CONTRIBUTING.md). How the code
-is put together is in [ARCHITECTURE.md](ARCHITECTURE.md), the exact behaviour in
-[SPEC.md](SPEC.md), and the reasons for the choices in [DECISIONS.md](DECISIONS.md). What is
-planned next, and what is not planned, is in [ROADMAP.md](ROADMAP.md). How the project is run,
-who does what and how it continues without any one person is in the organization's
+How to build, test and propose a change is in [CONTRIBUTING.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/CONTRIBUTING.md). How the code
+is put together is in [ARCHITECTURE.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/ARCHITECTURE.md), the exact behaviour in
+[SPEC.md](SPEC.md), and the reasons for the choices in [DECISIONS.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/DECISIONS.md). What is
+planned next, and what is not planned, is in [ROADMAP.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/ROADMAP.md). How the project is run
+and who does what is in the organization's
 [GOVERNANCE.md](https://github.com/distronode-corporation/.github/blob/main/GOVERNANCE.md).
 
 ## Security
