@@ -25,7 +25,7 @@ Contents: [When to use it](#when-to-use-it) · [Quick start](#quick-start) ·
 [What it serves](#what-it-serves) · [Configuration](#configuration) · [Storage](#storage) ·
 [Safety properties](#safety-properties) · [What a RateLimiter protects](#what-is-not-protected-without-a-ratelimiter) ·
 [Example server](#example-server) · [Experimental: fencing untrusted text](#experimental-fencing-untrusted-text) ·
-[What it does not do](#what-it-does-not-do)
+[What it does not do](#what-it-does-not-do) · [The project](#the-project)
 
 ## When to use it
 
@@ -403,6 +403,15 @@ mcp-frontdesk and Node.js versions, what you did, what happened and what you exp
 reproduction helps most. Use synthetic values only (`example.com`, `user-1`), never a real token,
 key or host. A security problem is not a bug report: report it privately, through GitHub's private
 vulnerability reporting as [SECURITY.md](SECURITY.md) describes, never in a public issue.
+
+## The project
+
+How to build, test and propose a change is in [CONTRIBUTING.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/CONTRIBUTING.md). How the code
+is put together is in [ARCHITECTURE.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/ARCHITECTURE.md), the exact behaviour in
+[SPEC.md](SPEC.md), and the reasons for the choices in [DECISIONS.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/DECISIONS.md). What is
+planned next, and what is not planned, is in [ROADMAP.md](https://github.com/distronode-corporation/mcp-frontdesk/blob/main/ROADMAP.md). How the project is run
+and who does what is in the organization's
+[GOVERNANCE.md](https://github.com/distronode-corporation/.github/blob/main/GOVERNANCE.md).
 
 ## Security
 
