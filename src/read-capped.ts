@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The capped reader for untrusted bodies (a token request, a client metadata
  * document fetched through the unsafe fetch option).

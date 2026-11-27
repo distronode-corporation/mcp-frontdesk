@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 import { strict as assert } from "node:assert";
 import { createServer, request as httpRequest, type RequestOptions } from "node:http";
 import type { AddressInfo, LookupFunction } from "node:net";

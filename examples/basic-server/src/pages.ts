@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The demo's HTML: a sign-in page and a consent page, plain forms, no script.
  * Every value from a request or a client's metadata document is escaped.

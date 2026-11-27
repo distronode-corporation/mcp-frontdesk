@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The example server: plain `node:http`, mcp-frontdesk for OAuth and the bearer
  * gate, and the official MCP TypeScript SDK for the protocol.

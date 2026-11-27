@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * mcp-frontdesk: an OAuth 2.1 authorization server and access-token gate for
  * MCP servers. See README.md.

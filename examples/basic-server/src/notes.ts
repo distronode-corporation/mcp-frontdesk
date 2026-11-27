@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The demo's data and tools: a notebook per demo account, in memory, made up.
  *

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The one configuration object, checked once by `createFrontdesk`. There are
  * no product defaults: the URLs, scopes, client hosts and redirect URIs are

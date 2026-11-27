@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The pinned GET against a local plain-HTTP server. The transport is the one
  * internal seam: `http.request` on a local port instead of `https.request` on

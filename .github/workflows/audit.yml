@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Distronode Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+
 name: Audit
 
 # The supply-chain checks (supply-chain.yml), weekly. An advisory is published against code

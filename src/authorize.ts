@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The authorization request (RFC 6749 section 4.1.1 with PKCE, RFC 8707 and
  * RFC 9207), checked in one fixed order, and the approval that mints a code.

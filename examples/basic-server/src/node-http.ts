@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The small adapter between `node:http` and the Web `Request` and `Response`
  * that mcp-frontdesk and the MCP SDK's handler speak.

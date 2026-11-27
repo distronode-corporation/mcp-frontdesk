@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The bearer gate for the resource server: who is calling, or the response
  * that tells an MCP client how to find out.

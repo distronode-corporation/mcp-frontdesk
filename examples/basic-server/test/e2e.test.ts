@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * End to end, over real sockets on 127.0.0.1: the example server, a client's
  * metadata document served by this test, and the official MCP SDK client.

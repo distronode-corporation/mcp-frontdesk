@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Client ID Metadata Documents (draft-ietf-oauth-client-id-metadata-document):
  * how the authorization server learns who a client is without registering it.

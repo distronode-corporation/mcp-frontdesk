@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Distronode Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # zizmor configuration. Read for local runs and for the organization's advisory run, which
 # audits this repository as a remote input and finds this file at `.github/zizmor.yml`.
 rules:
