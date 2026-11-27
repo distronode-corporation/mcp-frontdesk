@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Property tests (fast-check) over the parsers that see untrusted input: the client
 // metadata document a client_id URL serves, the Cache-Control header that comes with it,
 // and the PKCE code_challenge an authorization request carries.

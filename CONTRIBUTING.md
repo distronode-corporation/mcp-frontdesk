@@ -2,6 +2,8 @@
 
 Thank you for helping. Some ground rules keep the package small and trustworthy.
 
+New here? Issues labelled [good first issue](https://github.com/distronode-corporation/mcp-frontdesk/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22) are small, well scoped and need no access beyond this repository.
+
 ## Principles
 
 - **Fail closed.** When a check cannot be completed (a store error, a missing key, a hook that

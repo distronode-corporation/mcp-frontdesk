@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Which clients the authorization server talks to, and how redirect URIs are
  * matched. Pure functions over the configured allowlists.

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * What every part of one Frontdesk instance shares: the checked config, the
  * host's adapters, and safe wrappers around the optional hooks.

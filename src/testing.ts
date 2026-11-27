@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * mcp-frontdesk/testing: the contract every CodeStore and GrantStore must meet.
  *

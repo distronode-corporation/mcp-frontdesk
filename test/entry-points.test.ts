@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The package's entry points. Each subpath in package.json "exports" is built
  * from one module in src/, and each exports exactly the values below at run

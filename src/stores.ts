@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The storage contracts the host implements. Two in-memory implementations
  * ship in memory-stores.ts; `mcp-frontdesk/testing` exports the contract suite

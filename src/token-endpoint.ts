@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The token endpoint (RFC 6749 section 3.2): `authorization_code` with PKCE
  * S256, and `refresh_token` with rotation. Public clients only (auth method

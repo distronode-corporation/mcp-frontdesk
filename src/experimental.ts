@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * mcp-frontdesk/experimental: fencing for text an outside party wrote, before
  * an MCP tool returns it to a model.

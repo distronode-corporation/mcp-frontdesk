@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Run the example: `npm start` (port 3000), or `PORT=4000 npm start`.
  */

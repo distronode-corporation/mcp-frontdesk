@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * Access tokens: RFC 9068 JWTs (`typ: at+jwt`), ES256, one audience (the
  * resource), short-lived.

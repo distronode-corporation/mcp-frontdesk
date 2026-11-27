@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: Distronode Corporation
+//
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * In-memory stores: for tests, examples and single-process servers. Everything
  * is lost on restart, and nothing is shared between processes, so a server
