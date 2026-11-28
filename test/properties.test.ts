@@ -12,6 +12,7 @@ import fc from "fast-check";
 
 import { cacheTtlMs, ClientMetadataFetcher, type ClientMetadataRefusal } from "../src/client-metadata.ts";
 import { isAllowedRedirectUri } from "../src/client-policy.ts";
+import { base64UrlEncode } from "../src/encoding.ts";
 import { deriveCodeChallenge, isValidCodeChallenge, isValidCodeVerifier } from "../src/pkce.ts";
 import { CLIENT_ID, clock, HOSTED_REDIRECT, LOOPBACK_REDIRECT } from "./helpers.ts";
 
@@ -142,6 +143,35 @@ describe("property: PKCE", () => {
         assert.equal(bytes.length, 32);
         assert.equal(bytes.toString("base64url"), challenge);
       }),
+      { numRuns: 500 },
+    );
+  });
+});
+
+describe("property: base64UrlEncode", () => {
+  it("encodes any bytes as unpadded base64url that round-trips, using only the bytes in the view", () => {
+    fc.assert(
+      fc.property(fc.uint8Array({ maxLength: 256 }), (bytes) => {
+        const encoded = base64UrlEncode(bytes);
+        assert.match(encoded, /^[A-Za-z0-9_-]*$/);
+        assert.deepEqual(Buffer.from(encoded, "base64url"), Buffer.from(bytes));
+      }),
+      { numRuns: 500 },
+    );
+  });
+
+  it("encodes only the bytes in a view at a non-zero offset into a larger buffer", () => {
+    fc.assert(
+      fc.property(
+        fc.uint8Array({ minLength: 1, maxLength: 256 }),
+        fc.integer({ min: 1, max: 64 }),
+        (bytes, offset) => {
+          const backing = new Uint8Array(bytes.length + offset);
+          backing.set(bytes, offset);
+          const view = new Uint8Array(backing.buffer, offset, bytes.length);
+          assert.equal(base64UrlEncode(view), base64UrlEncode(bytes));
+        },
+      ),
       { numRuns: 500 },
     );
   });
